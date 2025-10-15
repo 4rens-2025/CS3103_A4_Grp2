@@ -1,5 +1,5 @@
 import asyncio
-from typing import Callable, Tuple
+from typing import Callable, Tuple, override
 
 from game_net_api.base import BaseGameNetAPI
 from game_net_api.utils import unpack_packet
@@ -37,3 +37,14 @@ class GameClient(BaseGameNetAPI):
         deliver_cb: Callable | None = None,
     ):
         super().__init__(protocol=ClientProtocol(deliver_cb=deliver_cb), bind_addr=bind_addr)
+        self.send_packets = 0
+
+    @override
+    async def send(self, payload: str, reliable: bool, dest: Tuple[str, int]) -> int:
+        self.send_packets += 1
+        return await super().send(payload, reliable, dest)
+
+    @override
+    async def stop(self):
+        await super().stop()
+        return self.send_packets

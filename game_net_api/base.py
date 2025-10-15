@@ -16,7 +16,6 @@ class BaseGameNetAPI:
         self.bind_addr = bind_addr
         self.transport = None
         self._seq = 0
-        self.default_remote = None
 
     async def start(self):
         if self.transport is not None:

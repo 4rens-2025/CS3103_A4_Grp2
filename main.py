@@ -32,9 +32,14 @@ async def main():
     await asyncio.sleep(0.5)
 
     # Clean up
-    await client.stop()
-    await server.stop()
+    sent_packets = await client.stop()
+    received_packets = await server.stop()
     print("Client and server stopped. Exiting.")
+
+    delivery_ratio = received_packets / sent_packets * 100
+    print(
+        f"Sent packets: {sent_packets}, Received packets: {received_packets}, Delivery ratio: {delivery_ratio:.2f}%"
+    )
 
 
 if __name__ == "__main__":
