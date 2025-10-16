@@ -1,51 +1,53 @@
+from abc import abstractmethod
 import asyncio
-from typing import Tuple
-
-from game_net_api.utils import pack_packet
+from typing import Callable, Tuple
 
 CHAN_RELIABLE = 0
 CHAN_UNRELIABLE = 1
 CHAN_ACK = 2
 
-MAX_SEQ = 0xFFFF
+
+class CustomProtocol(asyncio.DatagramProtocol):
+    def __init__(self, app_name: str, on_receive: Callable[[bytes, Tuple[str, int]], None]):
+        self.app_name = app_name
+        self.on_receive = on_receive
+
+    def connection_made(self, transport):
+        print(f"[GameNetAPI({self.app_name})] listening on {transport.get_extra_info('sockname')}")
+
+    def datagram_received(self, data, addr):
+        self.on_receive(data, addr)
+
+    def error_received(self, exc):
+        print(f"[{self.app_name}] error:", exc)
 
 
 class BaseGameNetAPI:
-    def __init__(self, protocol: asyncio.DatagramProtocol, bind_addr: Tuple[str, int]):
-        self.protocol = protocol
+    def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
+        self.app_name = app_name
         self.bind_addr = bind_addr
-        self.transport = None
-        self._seq = 0
+        self._transport = None
 
-    async def start(self):
-        if self.transport is not None:
-            return
-        loop = asyncio.get_running_loop()
-        transport, _ = await loop.create_datagram_endpoint(
-            lambda: self.protocol, local_addr=self.bind_addr
-        )
-        self.transport = transport
-
-    async def stop(self):
-        if not self.transport:
-            return
-
-        self.transport.close()
-        self.transport = None
-        await asyncio.sleep(0)
-
-    async def send(self, payload: str, reliable: bool, dest: Tuple[str, int]) -> int:
-        if self.transport is None:
+    @property
+    def transport(self):
+        if self._transport is None:
             raise RuntimeError("not started")
 
-        payload_b = payload.encode("utf-8")
+        return self._transport
 
-        self._seq = (self._seq + 1) & MAX_SEQ
-        if self._seq == 0:
-            self._seq = 1
-        ch = CHAN_RELIABLE if reliable else CHAN_UNRELIABLE
-        pkt = pack_packet(ch, self._seq, payload_b)
+    async def start(self):
+        if self._transport is not None:
+            return
+        loop = asyncio.get_running_loop()
+        protocol = CustomProtocol(app_name=self.app_name, on_receive=self._process_datagram)
+        transport, _ = await loop.create_datagram_endpoint(lambda: protocol, local_addr=self.bind_addr)
+        self._transport = transport
 
-        self.transport.sendto(pkt, dest)
+    @abstractmethod
+    def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
+        pass
 
-        return self._seq
+    async def stop(self):
+        self.transport.close()
+        self._transport = None
+        await asyncio.sleep(0)

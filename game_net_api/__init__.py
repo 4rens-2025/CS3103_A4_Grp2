@@ -1,4 +1,4 @@
-from .client import GameClient
-from .server import GameServer
+from .receiver import GameNetReceiver
+from .sender import GameNetSender
 
-__all__ = ["GameClient", "GameServer"]
+__all__ = ["GameNetReceiver", "GameNetSender"]
