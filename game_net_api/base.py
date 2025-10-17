@@ -6,6 +6,9 @@ CHAN_RELIABLE = 0
 CHAN_UNRELIABLE = 1
 CHAN_ACK = 2
 
+WINDOW_SIZE = 32  # packets
+MAX_SEQ_NUM = WINDOW_SIZE * 2
+
 
 class CustomProtocol(asyncio.DatagramProtocol):
     def __init__(self, app_name: str, on_receive: Callable[[bytes, Tuple[str, int]], None]):
@@ -26,6 +29,9 @@ class BaseGameNetAPI:
     def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
         self.app_name = app_name
         self.bind_addr = bind_addr
+        self.reliable_channel_metric = {"sent_packets": 0, "received_packets": 0}
+        self.unreliable_channel_metric = {"sent_packets": 0, "received_packets": 0}
+
         self._transport = None
 
     @property
@@ -43,11 +49,15 @@ class BaseGameNetAPI:
         transport, _ = await loop.create_datagram_endpoint(lambda: protocol, local_addr=self.bind_addr)
         self._transport = transport
 
+    async def stop(self):
+        self.transport.close()
+        self._transport = None
+
+        return self.reliable_channel_metric, self.unreliable_channel_metric
+
     @abstractmethod
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
         pass
 
-    async def stop(self):
-        self.transport.close()
-        self._transport = None
-        await asyncio.sleep(0)
+    def _in_window(self, seq: int, base_seq: int) -> bool:
+        return (seq - base_seq) % MAX_SEQ_NUM < WINDOW_SIZE

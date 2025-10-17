@@ -1,12 +1,11 @@
 # CS3103_A4_Grp2
 CS3103 Assignment 4 - Project Group 2
 
-Command to simulate packet loss and delay
-Note that this is applied to all network in the linux system (For testing purposes)
+bash script to simulate network
 ```sh
-# add 200 ms delay + 5% loss on loopback
-sudo tc qdisc add dev lo root netem delay 200ms 20ms loss 5%
+chmod +x netem-setup.sh
+chmod +x netem-cleanup.sh
 
-# when finished, remove it
-sudo tc qdisc del dev lo root
+./netem-setup.sh
+./netem-cleanup.sh
 ```

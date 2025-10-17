@@ -1,21 +1,22 @@
 import asyncio
-import re
 from typing import List, Tuple, override
 
-from game_net_api.base import CHAN_ACK, CHAN_RELIABLE, CHAN_UNRELIABLE, BaseGameNetAPI
+from game_net_api.base import (
+    CHAN_ACK,
+    CHAN_RELIABLE,
+    CHAN_UNRELIABLE,
+    MAX_SEQ_NUM,
+    WINDOW_SIZE,
+    BaseGameNetAPI,
+)
 from game_net_api.utils import pack_packet, unpack_packet
 
-WINDOW_SIZE = 32  # packets
-MAX_SEQ_NUM = WINDOW_SIZE * 2
 RETRANSMISSION_TIMEOUT = 0.5  # seconds
 
 
 class GameNetSender(BaseGameNetAPI):
     def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
         super().__init__(app_name=app_name, bind_addr=bind_addr)
-        self.reliable_channel_metric = {"sent_packets": 0}
-        self.unreliable_channel_metric = {"sent_packets": 0}
-
         self._next_seq = [0, 0]  # [reliable, unreliable]
 
         self._buffer: List[Tuple[bytes, Tuple[str, int]] | None] = [None] * WINDOW_SIZE
@@ -24,8 +25,11 @@ class GameNetSender(BaseGameNetAPI):
         self.timers = {}  # seq -> timers for retransmission
         self.sem = asyncio.Semaphore(WINDOW_SIZE)  # limit number of unacked packets
 
-    def _in_window(self, seq: int) -> bool:
-        return (seq - self._base_seq) % MAX_SEQ_NUM < WINDOW_SIZE
+    async def send(self, payload: str, reliable: bool, dest: Tuple[str, int]) -> int:
+        if reliable:
+            return await self._send_reliable(payload, dest)
+        else:
+            return await self._send_unreliable(payload, dest)
 
     @override
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
@@ -38,21 +42,16 @@ class GameNetSender(BaseGameNetAPI):
         if ch != CHAN_ACK:
             return  # Ignore non-ACK packets
 
-        if not self._in_window(seq):
+        if not self._in_window(seq, self._base_seq):
             return  # Ignore ACKs outside the window
 
         idx = seq % WINDOW_SIZE
         if self._acked[idx]:
             return  # Already acked
 
-        self._acked[idx] = True
         self._cancel_timer(seq)
-
-    async def send(self, payload: str, reliable: bool, dest: Tuple[str, int]) -> int:
-        if reliable:
-            return await self._send_reliable(payload, dest)
-        else:
-            return await self._send_unreliable(payload, dest)
+        self._acked[idx] = True
+        self._try_advance_base()
 
     async def _send_unreliable(self, payload: str, dest: Tuple[str, int]) -> int:
         next_seq = self._next_seq[CHAN_UNRELIABLE]
@@ -63,6 +62,7 @@ class GameNetSender(BaseGameNetAPI):
         self.transport.sendto(pkt, dest)
 
         self._next_seq[CHAN_UNRELIABLE] += 1
+        self._next_seq[CHAN_UNRELIABLE] %= MAX_SEQ_NUM
 
         return next_seq
 
@@ -70,6 +70,8 @@ class GameNetSender(BaseGameNetAPI):
         await self.sem.acquire()
 
         next_seq = self._next_seq[CHAN_RELIABLE]
+        self._next_seq[CHAN_RELIABLE] += 1
+        self._next_seq[CHAN_RELIABLE] %= MAX_SEQ_NUM
 
         pkt = pack_packet(CHAN_RELIABLE, next_seq, payload.encode("utf-8"))
 
@@ -81,13 +83,12 @@ class GameNetSender(BaseGameNetAPI):
         self._acked[idx] = False
         self._start_timer(next_seq)
 
-        self._next_seq[CHAN_RELIABLE] += 1
-
         return next_seq
 
     def _start_timer(self, seq):
         async def retransmit_on_timeout():
             await asyncio.sleep(RETRANSMISSION_TIMEOUT)
+
             if not self._acked[seq % WINDOW_SIZE]:
                 buf = self._buffer[seq % WINDOW_SIZE]
                 if buf:
@@ -109,8 +110,3 @@ class GameNetSender(BaseGameNetAPI):
             self._acked[idx] = False
             self._base_seq = (self._base_seq + 1) % MAX_SEQ_NUM
             self.sem.release()
-
-    @override
-    async def stop(self):
-        await super().stop()
-        return self.unreliable_channel_metric, self.reliable_channel_metric

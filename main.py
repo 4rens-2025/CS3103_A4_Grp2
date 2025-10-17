@@ -3,6 +3,7 @@ from typing import Tuple
 
 from game_net_api.receiver import GameNetReceiver
 from game_net_api.sender import GameNetSender
+import random
 
 
 def print_received_packet(app_name: str, addr: Tuple[str, int], seq: int, ch: int, payload: bytes):
@@ -27,9 +28,10 @@ def print_metrics(sender_metric, receiver_metric):
 
 async def main():
     # Start the receiver
+    receiver_addr = ("127.0.0.1", 50000)
     receiver = GameNetReceiver(
         "Player 1",
-        ("127.0.0.1", 9999),
+        receiver_addr,
         deliver_cb=lambda addr, seq, ch, payload: print_received_packet(
             "Player 1", addr, seq, ch, payload
         ),
@@ -37,21 +39,26 @@ async def main():
     await receiver.start()
 
     # Start the sender
-    sender = GameNetSender("Player 2", ("127.0.0.1", 0))
+    sender_addr = ("127.0.0.1", 50001)
+    sender = GameNetSender("Player 2", sender_addr)
     await sender.start()
 
-    async def send_unreliable_messages():
-        for i in range(10):
-            await sender.send(f"hello-{i}", reliable=False, dest=("127.0.0.1", 9999))
+    reliable_curr = unreliable_curr = 0
+    for _ in range(100):
+        # reliable = random.choice([True, False])
+        reliable = True
+        await sender.send(
+            f"packet-{reliable_curr if reliable else unreliable_curr}",
+            reliable=reliable,
+            dest=receiver_addr,
+        )
 
-    async def send_reliable_messages():
-        for i in range(10):
-            await sender.send(f"reliable-hello-{i}", reliable=True, dest=("127.0.0.1", 9999))
+        if reliable:
+            reliable_curr += 1
+        else:
+            unreliable_curr += 1
 
-    await asyncio.gather(send_reliable_messages(), send_unreliable_messages())
-
-    # Sleep a bit to allow packets to be processed
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(2)
 
     # Clean up
     sender_unreliable_metric, sender_reliable_metric = await sender.stop()
