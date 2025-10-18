@@ -25,6 +25,9 @@ class GameNetSender(BaseGameNetAPI):
         self.timers = {}  # seq -> timers for retransmission
         self.sem = asyncio.Semaphore(WINDOW_SIZE)  # limit number of unacked packets
 
+        self.reliable_channel_metric["sent_packets"] = 0
+        self.unreliable_channel_metric["sent_packets"] = 0
+
     async def send(self, payload: str, reliable: bool, dest: Tuple[str, int]) -> int:
         if reliable:
             return await self._send_reliable(payload, dest)

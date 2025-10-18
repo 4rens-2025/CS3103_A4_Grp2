@@ -29,8 +29,8 @@ class BaseGameNetAPI:
     def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
         self.app_name = app_name
         self.bind_addr = bind_addr
-        self.reliable_channel_metric = {"sent_packets": 0, "received_packets": 0}
-        self.unreliable_channel_metric = {"sent_packets": 0, "received_packets": 0}
+        self.reliable_channel_metric = {}
+        self.unreliable_channel_metric = {}
 
         self._transport = None
 

@@ -14,15 +14,33 @@ def print_received_packet(app_name: str, addr: Tuple[str, int], seq: int, ch: in
     print(f"[{app_name}] from={addr} seq={seq} ch={ch} payload={text}")
 
 
-def print_metrics(sender_metric, receiver_metric):
-    sent_packets = sender_metric["sent_packets"]
-    received_packets = receiver_metric["received_packets"]
+def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
+    """
+    Print summarized metrics for a specific channel.
+    """
+    sent_packets = sender_metric.get("sent_packets", 0)
+    received_packets = receiver_metric.get("received_packets", 0)
+    received_bytes = receiver_metric.get("received_bytes", 0)
 
-    delivery_ratio = received_packets / sent_packets * 100 if sent_packets > 0 else 0.0
+    delivery_ratio = (received_packets / sent_packets * 100) if sent_packets > 0 else 0.0
+    throughput_kbps = (received_bytes) / (duration_s)  # bytes per second
 
-    print(
-        f"Sent packets: {sent_packets}, Received packets: {received_packets}, Delivery ratio: {delivery_ratio:.2f}%"
+    avg_latency = (
+        receiver_metric.get("latency_sum_ms", 0.0) / received_packets if received_packets > 0 else 0.0
     )
+    jitter = receiver_metric.get("jitter_ms", 0.0)
+    latency_min = receiver_metric.get("latency_min_ms", 0.0)
+    latency_max = receiver_metric.get("latency_max_ms", 0.0)
+
+    print("--------------------------------------------------")
+    print(f"Sent packets:       {sent_packets}")
+    print(f"Received packets:   {received_packets}")
+    print(f"Delivery ratio:     {delivery_ratio:.2f}%")
+    print(f"Throughput:         {throughput_kbps:.2f} Bps")
+    print(f"Latency (avg):      {avg_latency:.2f} ms")
+    print(f"Latency (min/max):  {latency_min:.2f} / {latency_max:.2f} ms")
+    print(f"Jitter (RFC3550):   {jitter:.2f} ms")
+    print("--------------------------------------------------\n")
 
 
 async def _send_packets_worker(
@@ -95,7 +113,6 @@ async def main():
     print("===============================================")
     print("Unreliable Channel Metrics:")
     print_metrics(sender_unreliable_metric, receiver_unreliable_metric)
-    print("-----------------------------------------------")
     print("Reliable Channel Metrics:")
     print_metrics(sender_reliable_metric, receiver_reliable_metric)
 
