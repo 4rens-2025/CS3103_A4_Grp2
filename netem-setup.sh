@@ -6,9 +6,9 @@ SRC=127.0.0.1
 DST=127.0.0.1
 SPORT=50000
 DPORT=50001
-DELAY=200ms
-JITTER=20ms
-LOSS=20%
+DELAY=50ms # 50ms (Nominal), 200ms (High latency)
+JITTER=5ms # 5ms (Nominal), 20ms (High latency)
+LOSS=1% # 1% (Nominal), 15% (High packet loss)
 
 # reset then add qdiscs
 sudo tc qdisc del dev "$IF" root 2>/dev/null || true

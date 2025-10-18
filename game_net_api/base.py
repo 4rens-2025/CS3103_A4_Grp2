@@ -6,8 +6,8 @@ CHAN_RELIABLE = 0
 CHAN_UNRELIABLE = 1
 CHAN_ACK = 2
 
-WINDOW_SIZE = 32  # packets
-MAX_SEQ_NUM = WINDOW_SIZE * 2
+MAX_SEQ_NUM = 2**16  # 16-bit sequence number
+WINDOW_SIZE = 128  # packets
 
 
 class CustomProtocol(asyncio.DatagramProtocol):

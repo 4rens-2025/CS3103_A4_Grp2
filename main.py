@@ -1,17 +1,7 @@
 import asyncio
-from typing import Tuple
 
-from game_net_api.receiver import GameNetReceiver
-from game_net_api.sender import GameNetSender
-
-
-def print_received_packet(app_name: str, addr: Tuple[str, int], seq: int, ch: int, payload: bytes):
-    """Print log for each received packet."""
-    try:
-        text = payload.decode("utf-8")
-    except Exception:
-        text = repr(payload)
-    print(f"[{app_name}] from={addr} seq={seq} ch={ch} payload={text}")
+from receiver_app import ReceiverApp
+from sender_app import SenderApp
 
 
 def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
@@ -20,6 +10,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     """
     sent_packets = sender_metric.get("sent_packets", 0)
     received_packets = receiver_metric.get("received_packets", 0)
+    skipped_packets = receiver_metric.get("skipped_packets", 0)
     received_bytes = receiver_metric.get("received_bytes", 0)
 
     delivery_ratio = (received_packets / sent_packets * 100) if sent_packets > 0 else 0.0
@@ -35,6 +26,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     print("--------------------------------------------------")
     print(f"Sent packets:       {sent_packets}")
     print(f"Received packets:   {received_packets}")
+    print(f"Skipped packets:    {skipped_packets}")
     print(f"Delivery ratio:     {delivery_ratio:.2f}%")
     print(f"Throughput:         {throughput_kbps:.2f} Bps")
     print(f"Latency (avg):      {avg_latency:.2f} ms")
@@ -43,70 +35,38 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     print("--------------------------------------------------\n")
 
 
-async def _send_packets_worker(
-    sender: GameNetSender, dest: Tuple[str, int], rate: float, duration: float, reliable: bool
-):
-    interval = 1.0 / rate
-
-    loop = asyncio.get_running_loop()
-    t0 = loop.time()
-
-    next_send = t0
-    packet_idx = 0
-
-    while loop.time() < t0 + duration:
-        next_send += interval
-        sleep_for = next_send - loop.time()
-        if sleep_for > 0:
-            await asyncio.sleep(sleep_for)
-
-        await sender.send(
-            f"{"unreliable" if not reliable else "reliable"}-packet-{packet_idx}",
-            reliable=reliable,
-            dest=dest,
-        )
-        packet_idx += 1
-
-
 async def main():
-    # Start the receiver
     receiver_addr = ("127.0.0.1", 50000)
-    receiver = GameNetReceiver(
-        "Player 1",
-        receiver_addr,
-        deliver_cb=lambda addr, seq, ch, payload: print_received_packet(
-            "Player 1", addr, seq, ch, payload
-        ),
-    )
-    await receiver.start()
-
-    # Start the sender
     sender_addr = ("127.0.0.1", 50001)
-    sender = GameNetSender("Player 2", sender_addr)
-    await sender.start()
 
-    # Start sending packets from sender to receiver
+    receiver_app = ReceiverApp(receiver_addr)
+    sender_app = SenderApp(sender_addr)
+
     send_rate = 100.0  # packets per second
     test_duration = 30.0  # seconds
 
-    tasks = [
-        asyncio.create_task(
-            _send_packets_worker(
-                sender,
-                dest=receiver_addr,
-                rate=send_rate,
-                duration=test_duration,
-                reliable=reliable,
-            )
-        )
-        for reliable in [False, True]
-    ]
+    import threading
 
-    await asyncio.gather(*tasks)
+    def start_receiver_loop():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(receiver_app.run())
 
-    # Clean up
-    sender_reliable_metric, sender_unreliable_metric = await sender.stop()
-    receiver_reliable_metric, receiver_unreliable_metric = await receiver.stop()
+    def start_sender_loop():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(sender_app.run(receiver_addr, send_rate, test_duration))
+
+    t1 = threading.Thread(target=start_receiver_loop)
+    t2 = threading.Thread(target=start_sender_loop)
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    sender_reliable_metric, sender_unreliable_metric = sender_app.get_metrics()
+    receiver_reliable_metric, receiver_unreliable_metric = receiver_app.get_metrics()
     print("Sender and receiver stopped. Exiting.\n")
 
     print(f"Metrics Summary: (Packet rate: {send_rate} packets/sec over {test_duration} seconds)")

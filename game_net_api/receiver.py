@@ -1,3 +1,4 @@
+import asyncio
 import struct
 from typing import Callable, List, Tuple, override
 
@@ -11,19 +12,19 @@ from game_net_api.base import (
 )
 from game_net_api.utils import HDR_FMT, now_ms, unpack_packet
 
-SKIP_TIMEOUT = 200  # ms
+SKIP_TIMEOUT = 0.2  # seconds
 
 
 class GameNetReceiver(BaseGameNetAPI):
     def __init__(self, app_name: str, bind_addr: Tuple[str, int], deliver_cb: Callable):
         super().__init__(app_name, bind_addr)
         self._deliver_cb = deliver_cb
-        self._expected_seq = None
 
         # Circular buffer of length WINDOW_SIZE
         self.buffer: List[Tuple | None] = [None] * WINDOW_SIZE
         self.received = [False] * WINDOW_SIZE
         self.base_seq = 0  # smallest expected seq in window
+        self.skip_timers = {}  # seq -> skip timers
 
         self.reliable_channel_metric = {
             "received_packets": 0,
@@ -32,6 +33,7 @@ class GameNetReceiver(BaseGameNetAPI):
             "latency_min_ms": float("inf"),
             "latency_max_ms": 0.0,
             "jitter_ms": 0.0,
+            "skipped_packets": 0,
         }
         self.unreliable_channel_metric = {
             "received_packets": 0,
@@ -41,6 +43,13 @@ class GameNetReceiver(BaseGameNetAPI):
             "latency_max_ms": 0.0,
             "jitter_ms": 0.0,
         }
+
+    @override
+    def stop(self):
+        for timer in self.skip_timers.values():
+            timer.cancel()
+        self.skip_timers.clear()
+        return super().stop()
 
     @override
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
@@ -62,7 +71,8 @@ class GameNetReceiver(BaseGameNetAPI):
         self, addr: Tuple[str, int], seq: int, send_ts: int, arrival_ts: int, payload: bytes
     ):
         # Do nothing and call the deliver callback
-        self._deliver_cb(addr, seq, CHAN_UNRELIABLE, payload)
+        rtt = arrival_ts - send_ts
+        self._deliver_cb(addr, seq, CHAN_UNRELIABLE, payload, rtt)
 
         self._update_metrics(CHAN_UNRELIABLE, send_ts, arrival_ts, payload)
 
@@ -84,12 +94,17 @@ class GameNetReceiver(BaseGameNetAPI):
 
         idx = seq % WINDOW_SIZE
         if not self.received[idx]:
-            self.buffer[idx] = (addr, seq, payload)
+            rtt = arrival_ts - send_ts
+            self.buffer[idx] = (addr, seq, payload, rtt)
             self.received[idx] = True
 
-            self._update_metrics(CHAN_RELIABLE, send_ts, arrival_ts, payload)
+            if seq != self.base_seq:
+                # self._start_skip_timer(seq, addr)
+                pass
+            else:
+                self._try_deliver()
 
-        self._try_deliver()
+            self._update_metrics(CHAN_RELIABLE, send_ts, arrival_ts, payload)
 
     def _make_ack(self, seq: int) -> bytes:
         ts = now_ms()
@@ -100,15 +115,47 @@ class GameNetReceiver(BaseGameNetAPI):
             idx = self.base_seq % WINDOW_SIZE
             buf = self.buffer[idx]
 
-            if buf is None:
-                print("Unexpected None in buffer")
+            if buf is not None:
+                addr, seq, payload, rtt = buf
+                self._deliver_cb(addr, seq, CHAN_RELIABLE, payload, rtt)
             else:
-                addr, seq, payload = buf
-                self._deliver_cb(addr, seq, CHAN_RELIABLE, payload)
+                self.reliable_channel_metric["skipped_packets"] += 1
+
+            if self.base_seq in self.skip_timers:
+                self.skip_timers[self.base_seq].cancel()
+                del self.skip_timers[self.base_seq]
 
             self.buffer[idx] = None
             self.received[idx] = False
             self.base_seq = (self.base_seq + 1) % MAX_SEQ_NUM
+
+    def _start_skip_timer(self, seq: int, addr: Tuple[str, int]):
+        async def skip_packet():
+            current = asyncio.current_task()
+            await asyncio.sleep(SKIP_TIMEOUT)
+
+            # Ensure the timer is still valid
+            if self.skip_timers.get(seq) != current:
+                return
+
+            # Skip lost packets before seq on timeout
+            for offset in range(WINDOW_SIZE):
+                check_seq = (self.base_seq + offset) % MAX_SEQ_NUM
+                if check_seq == seq:
+                    break
+
+                idx = check_seq % WINDOW_SIZE
+
+                if self.received[idx]:
+                    continue
+
+                ack_pkt = self._make_ack(check_seq)
+                self.transport.sendto(ack_pkt, addr)
+                self.received[idx] = True  # Mark as received to skip
+
+            self._try_deliver()
+
+        self.skip_timers[seq] = asyncio.create_task(skip_packet())
 
     def _update_metrics(self, ch: int, send_ts: int, arrival_ms: int, payload: bytes):
         metric = self.reliable_channel_metric if ch == CHAN_RELIABLE else self.unreliable_channel_metric

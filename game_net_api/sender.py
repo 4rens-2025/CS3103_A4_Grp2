@@ -11,7 +11,7 @@ from game_net_api.base import (
 )
 from game_net_api.utils import pack_packet, unpack_packet
 
-RETRANSMISSION_TIMEOUT = 0.5  # seconds
+RETRANSMISSION_TIMEOUT = 0.01  # seconds
 
 
 class GameNetSender(BaseGameNetAPI):
@@ -33,6 +33,13 @@ class GameNetSender(BaseGameNetAPI):
             return await self._send_reliable(payload, dest)
         else:
             return await self._send_unreliable(payload, dest)
+
+    @override
+    def stop(self):
+        for timer in self.timers.values():
+            timer.cancel()
+        self.timers.clear()
+        return super().stop()
 
     @override
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
@@ -90,7 +97,12 @@ class GameNetSender(BaseGameNetAPI):
 
     def _start_timer(self, seq):
         async def retransmit_on_timeout():
+            current = asyncio.current_task()
             await asyncio.sleep(RETRANSMISSION_TIMEOUT)
+
+            # Ensure the timer is still valid
+            if self.timers.get(seq) != current:
+                return
 
             if not self._acked[seq % WINDOW_SIZE]:
                 buf = self._buffer[seq % WINDOW_SIZE]
