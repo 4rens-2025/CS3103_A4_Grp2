@@ -6,14 +6,17 @@ from game_net_api import GameNetSender
 
 class SenderApp:
     def __init__(self, addr: Tuple[str, int]):
-        self.addr = addr
-        self.sender = GameNetSender("Player 2", self.addr)
+        self._addr = addr
+        self._sender = GameNetSender("Sender", self._addr)
 
     async def run(self, receiver_addr: Tuple[str, int], rate: float, duration: float):
-        await self.sender.start()
+        """Run the sender to send packets to the receiver at a specified rate and duration."""
+        await self._sender.start()
+
+        # Send packets on both reliable and unreliable channels
         tasks = [
             asyncio.create_task(
-                self.send_packets(
+                self._send_packets(
                     dest=receiver_addr,
                     rate=rate,
                     duration=duration,
@@ -23,12 +26,22 @@ class SenderApp:
             for reliable in [True, False]
         ]
         await asyncio.gather(*tasks)
-        await self.sender.stop()
+
+        await self._sender.stop()
 
     def get_metrics(self):
-        return self.sender.reliable_channel_metric, self.sender.unreliable_channel_metric
+        return self._sender.reliable_channel_metric, self._sender.unreliable_channel_metric
 
-    async def send_packets(self, dest: Tuple[str, int], rate: float, duration: float, reliable: bool):
+    async def _send_packets(self, dest: Tuple[str, int], rate: float, duration: float, reliable: bool):
+        """
+        Send packets at the specified rate and duration through specific channel.
+
+        Args:
+            dest (Tuple[str, int]): Destination address.
+            rate (float): Packets per second.
+            duration (float): Duration to send packets in seconds.
+            reliable (bool): Whether to use reliable channel.
+        """
         interval = 1.0 / rate
         loop = asyncio.get_running_loop()
         t0 = loop.time()
@@ -40,8 +53,8 @@ class SenderApp:
             sleep_for = next_send - loop.time()
             if sleep_for > 0:
                 await asyncio.sleep(sleep_for)
-            await self.sender.send(
-                f'{"reliable" if reliable else "unreliable"}-packet-{packet_idx}',
+            await self._sender.send(
+                f'{"reliable" if reliable else "unreliable"}-{packet_idx}',
                 reliable=reliable,
                 dest=dest,
             )

@@ -49,7 +49,7 @@ class BaseGameNetAPI:
         transport, _ = await loop.create_datagram_endpoint(lambda: protocol, local_addr=self.bind_addr)
         self._transport = transport
 
-    async def stop(self):
+    def stop(self):
         self.transport.close()
         self._transport = None
 

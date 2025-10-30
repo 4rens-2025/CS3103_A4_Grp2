@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Tuple
 
 from game_net_api import GameNetReceiver
@@ -6,20 +7,26 @@ from game_net_api import GameNetReceiver
 
 class ReceiverApp:
     def __init__(self, addr: Tuple[str, int]):
-        self.addr = addr
-        self.receiver = GameNetReceiver("Player 1", self.addr, deliver_cb=self.print_packet)
+        self._addr = addr
+        self._receiver = GameNetReceiver("Receiver", self._addr, deliver_cb=self._print_packet)
 
-    async def run(self):
-        await self.receiver.start()
-        await asyncio.sleep(35.0)  # Run for 35 seconds
-        await self.receiver.stop()
+    async def run(self, duration: float):
+        """Run the receiver for a specified duration."""
+        await self._receiver.start()
+        await asyncio.sleep(duration)
+        await self._receiver.stop()
 
     def get_metrics(self):
-        return self.receiver.reliable_channel_metric, self.receiver.unreliable_channel_metric
+        """Get the receiver metrics."""
+        return self._receiver.reliable_channel_metric, self._receiver.unreliable_channel_metric
 
-    def print_packet(self, addr: Tuple[str, int], seq: int, ch: int, payload: bytes, rtt: float):
+    def _print_packet(self, seq: int, ch: int, payload: bytes, arrival_ts: float, latency: float):
+        """Callback to print received packet information."""
+        arrival_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(arrival_ts / 1000))
         try:
             text = payload.decode("utf-8")
         except Exception:
             text = repr(payload)
-        print(f"[Player 1] from={addr} seq={seq} ch={ch} payload={text} rtt={rtt:.2f} ms")
+        print(
+            f"[Receiver] seq={seq} ch={ch} arrival={arrival_str} latency(one-way)={latency:.2f} ms payload={text} "
+        )

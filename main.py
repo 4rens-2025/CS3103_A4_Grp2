@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 from receiver_app import ReceiverApp
 from sender_app import SenderApp
@@ -45,18 +46,17 @@ async def main():
     send_rate = 100.0  # packets per second
     test_duration = 30.0  # seconds
 
-    import threading
-
     def start_receiver_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(receiver_app.run())
+        loop.run_until_complete(receiver_app.run(test_duration))
 
     def start_sender_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(sender_app.run(receiver_addr, send_rate, test_duration))
+        loop.run_until_complete(sender_app.run(receiver_addr, send_rate, test_duration + 5.0))
 
+    # Start receiver and sender in separate threads
     t1 = threading.Thread(target=start_receiver_loop)
     t2 = threading.Thread(target=start_sender_loop)
 
@@ -65,6 +65,7 @@ async def main():
     t1.join()
     t2.join()
 
+    # Get and print metrics
     sender_reliable_metric, sender_unreliable_metric = sender_app.get_metrics()
     receiver_reliable_metric, receiver_unreliable_metric = receiver_app.get_metrics()
     print("Sender and receiver stopped. Exiting.\n")

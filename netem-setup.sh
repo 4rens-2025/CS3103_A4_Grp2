@@ -6,9 +6,16 @@ SRC=127.0.0.1
 DST=127.0.0.1
 SPORT=50000
 DPORT=50001
-DELAY=50ms # 50ms (Nominal), 200ms (High latency)
-JITTER=5ms # 5ms (Nominal), 20ms (High latency)
-LOSS=1% # 1% (Nominal), 15% (High packet loss)
+
+# Nominal defaults
+DEFAULT_DELAY="50ms"
+DEFAULT_JITTER="5ms"
+DEFAULT_LOSS="1%"
+
+# Use args or defaults
+DELAY="${1:-$DEFAULT_DELAY}"
+JITTER="${2:-$DEFAULT_JITTER}"
+LOSS="${3:-$DEFAULT_LOSS}"
 
 # reset then add qdiscs
 sudo tc qdisc del dev "$IF" root 2>/dev/null || true

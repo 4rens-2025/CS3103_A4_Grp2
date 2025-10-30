@@ -1,5 +1,4 @@
 import asyncio
-import struct
 from typing import Callable, List, Tuple, override
 
 from game_net_api.base import (
@@ -10,9 +9,9 @@ from game_net_api.base import (
     WINDOW_SIZE,
     BaseGameNetAPI,
 )
-from game_net_api.utils import HDR_FMT, now_ms, unpack_packet
+from game_net_api.utils import calc_latency, now_ms, pack_packet, unpack_packet
 
-SKIP_TIMEOUT = 0.2  # seconds
+SKIP_TIMEOUT = 0.2  # seconds, 200 ms
 
 
 class GameNetReceiver(BaseGameNetAPI):
@@ -71,14 +70,15 @@ class GameNetReceiver(BaseGameNetAPI):
         self, addr: Tuple[str, int], seq: int, send_ts: int, arrival_ts: int, payload: bytes
     ):
         # Do nothing and call the deliver callback
-        rtt = arrival_ts - send_ts
-        self._deliver_cb(addr, seq, CHAN_UNRELIABLE, payload, rtt)
+        latency = arrival_ts & 0xFFFFFFFF - send_ts
+        self._deliver_cb(seq, CHAN_UNRELIABLE, payload, arrival_ts, latency)
 
         self._update_metrics(CHAN_UNRELIABLE, send_ts, arrival_ts, payload)
 
     def _handle_reliable(
         self, addr: Tuple[str, int], seq: int, send_ts: int, arrival_ts: int, payload: bytes
     ):
+        # If seq outside window [base_seq - WINDOW_SIZE, base_seq + WINDOW_SIZE), ignore
         if not self._in_window(seq, self.base_seq) and not self._in_window(
             seq, (self.base_seq - WINDOW_SIZE) % MAX_SEQ_NUM
         ):
@@ -93,31 +93,31 @@ class GameNetReceiver(BaseGameNetAPI):
             return
 
         idx = seq % WINDOW_SIZE
-        if not self.received[idx]:
-            rtt = arrival_ts - send_ts
-            self.buffer[idx] = (addr, seq, payload, rtt)
-            self.received[idx] = True
 
-            if seq != self.base_seq:
-                # self._start_skip_timer(seq, addr)
-                pass
-            else:
-                self._try_deliver()
+        if self.received[idx]:
+            return  # Duplicate packet; ignore
 
-            self._update_metrics(CHAN_RELIABLE, send_ts, arrival_ts, payload)
+        latency = calc_latency(send_ts, arrival_ts)
+        self.buffer[idx] = (addr, seq, payload, arrival_ts, latency)
+        self.received[idx] = True
 
-    def _make_ack(self, seq: int) -> bytes:
-        ts = now_ms()
-        return struct.pack(HDR_FMT, CHAN_ACK, seq & 0xFFFF, ts)
+        # If out of order, start skip timer
+        if seq != self.base_seq:
+            self._start_skip_timer(seq, addr)
+        else:
+            self._try_deliver()
+
+        self._update_metrics(CHAN_RELIABLE, send_ts, arrival_ts, payload)
 
     def _try_deliver(self):
+        """Try to deliver in-order packets from the buffer."""
         while self.received[self.base_seq % WINDOW_SIZE]:
             idx = self.base_seq % WINDOW_SIZE
             buf = self.buffer[idx]
 
             if buf is not None:
-                addr, seq, payload, rtt = buf
-                self._deliver_cb(addr, seq, CHAN_RELIABLE, payload, rtt)
+                _, seq, payload, arrival_ts, latency = buf
+                self._deliver_cb(seq, CHAN_RELIABLE, payload, arrival_ts, latency)
             else:
                 self.reliable_channel_metric["skipped_packets"] += 1
 
@@ -130,7 +130,10 @@ class GameNetReceiver(BaseGameNetAPI):
             self.base_seq = (self.base_seq + 1) % MAX_SEQ_NUM
 
     def _start_skip_timer(self, seq: int, addr: Tuple[str, int]):
+        """Start a skip timer for the given seq number."""
+
         async def skip_packet():
+            """Skip packets before seq after timeout."""
             current = asyncio.current_task()
             await asyncio.sleep(SKIP_TIMEOUT)
 
@@ -157,11 +160,15 @@ class GameNetReceiver(BaseGameNetAPI):
 
         self.skip_timers[seq] = asyncio.create_task(skip_packet())
 
+    def _make_ack(self, seq: int) -> bytes:
+        """Create an ACK packet for the given seq number."""
+        return pack_packet(CHAN_ACK, seq)
+
     def _update_metrics(self, ch: int, send_ts: int, arrival_ms: int, payload: bytes):
         metric = self.reliable_channel_metric if ch == CHAN_RELIABLE else self.unreliable_channel_metric
 
-        # Current receive timestamp (in ms)
-        transit_ms = float(arrival_ms - send_ts)  # one-way latency estimate
+        # Calculate one-way latency
+        transit_ms = calc_latency(send_ts, arrival_ms)
 
         if "prev_transit_ms" not in metric:
             metric["prev_transit_ms"] = transit_ms
