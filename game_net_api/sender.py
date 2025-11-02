@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Tuple, override
+from typing import List, Tuple
 
 from game_net_api.base import (
     CHAN_ACK,
@@ -45,7 +45,6 @@ class GameNetSender(BaseGameNetAPI):
         else:
             return await self._send_unreliable(payload, dest)
 
-    @override
     def stop(self):
         # Clean up all timers on stop
         for timer in self._timers.values():
@@ -54,7 +53,6 @@ class GameNetSender(BaseGameNetAPI):
 
         return super().stop()
 
-    @override
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
         try:
             # unpack_packet now returns (ch, seq, ts, retrans_count, payload)
