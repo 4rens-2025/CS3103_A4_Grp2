@@ -1,0 +1,26 @@
+Vagrant.configure("2") do |config|
+  # Use Ubuntu 22.04 LTS (x86_64)
+  config.vm.box = "bento/ubuntu-22.04"
+  config.vm.hostname = "test-py312"  # Unique VM name
+
+  # VM resources
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "test-py312"   # avoid conflicts with existing VMs
+    vb.memory = "2048"
+    vb.cpus = 2
+  end
+
+  # Sync project folder using rsync
+  # Maps current host folder to /home/vagrant/A4 in VM
+  config.vm.synced_folder ".", "/home/vagrant/A4", type: "rsync", rsync__auto: true, owner: "vagrant", group: "vagrant"
+
+  # Provision: install Python3.12
+  config.vm.provision "shell", inline: <<-SHELL
+    # Update and install prerequisites
+    sudo apt-get update -y
+    sudo apt-get install -y software-properties-common build-essential
+
+    # Install Python 3
+    sudo apt-get install -y python3
+  SHELL
+end

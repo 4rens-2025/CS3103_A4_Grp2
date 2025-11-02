@@ -1,5 +1,5 @@
 import asyncio
-from typing import Callable, List, Tuple, override
+from typing import Callable, List, Tuple
 
 from game_net_api.base import (
     CHAN_ACK,
@@ -43,14 +43,12 @@ class GameNetReceiver(BaseGameNetAPI):
             "jitter_ms": 0.0,
         }
 
-    @override
     def stop(self):
         for timer in self.skip_timers.values():
             timer.cancel()
         self.skip_timers.clear()
         return super().stop()
 
-    @override
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
         arrival_ts = now_ms()
         try:
@@ -70,7 +68,7 @@ class GameNetReceiver(BaseGameNetAPI):
         self, addr: Tuple[str, int], seq: int, send_ts: int, arrival_ts: int, payload: bytes
     ):
         # Do nothing and call the deliver callback
-        latency = arrival_ts & 0xFFFFFFFF - send_ts
+        latency = calc_latency(send_ts, arrival_ts)
         self._deliver_cb(seq, CHAN_UNRELIABLE, payload, arrival_ts, latency)
 
         self._update_metrics(CHAN_UNRELIABLE, send_ts, arrival_ts, payload)
