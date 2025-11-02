@@ -14,7 +14,7 @@ class ReceiverApp:
         """Run the receiver for a specified duration."""
         await self._receiver.start()
         await asyncio.sleep(duration)
-        await self._receiver.stop()
+        self._receiver.stop()
 
     def get_metrics(self):
         """Get the receiver metrics."""
