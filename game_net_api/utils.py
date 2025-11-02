@@ -7,7 +7,7 @@ HDR_SIZE = struct.calcsize(HDR_FMT)
 
 def now_ms() -> int:
     """Get timestamp in milliseconds."""
-    return int(time.time() * 1000)
+    return int(time.monotonic_ns() / 1_000_000)
 
 
 def calc_latency(send_ts: int, arrival_ts: int) -> int:
