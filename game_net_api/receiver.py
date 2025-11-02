@@ -54,29 +54,30 @@ class GameNetReceiver(BaseGameNetAPI):
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
         arrival_ts = now_ms()
         try:
-            ch, seq, send_ts, payload = unpack_packet(data)
+            # unpack_packet now returns (ch, seq, ts, retrans_count, payload)
+            ch, seq, send_ts, rtx, payload = unpack_packet(data)
         except Exception as e:
             print(f"[ServerProtocol] bad pkt from {addr}: {e}")
             return
 
         if ch == CHAN_UNRELIABLE:
-            self._handle_unreliable(addr, seq, send_ts, arrival_ts, payload)
+            self._handle_unreliable(addr, seq, send_ts, rtx, arrival_ts, payload)
         elif ch == CHAN_RELIABLE:
-            self._handle_reliable(addr, seq, send_ts, arrival_ts, payload)
+            self._handle_reliable(addr, seq, send_ts, rtx, arrival_ts, payload)
         elif ch == CHAN_ACK:
             pass  # Ignore ACK packets for server
 
     def _handle_unreliable(
-        self, addr: Tuple[str, int], seq: int, send_ts: int, arrival_ts: int, payload: bytes
+        self, addr: Tuple[str, int], seq: int, send_ts: int, rtx: int, arrival_ts: int, payload: bytes
     ):
         # Do nothing and call the deliver callback
-        latency = arrival_ts & 0xFFFFFFFF - send_ts
-        self._deliver_cb(seq, CHAN_UNRELIABLE, payload, arrival_ts, latency)
+        latency = calc_latency(send_ts, arrival_ts)
+        self._deliver_cb(seq, CHAN_UNRELIABLE, payload, arrival_ts, latency, rtx)
 
         self._update_metrics(CHAN_UNRELIABLE, send_ts, arrival_ts, payload)
 
     def _handle_reliable(
-        self, addr: Tuple[str, int], seq: int, send_ts: int, arrival_ts: int, payload: bytes
+        self, addr: Tuple[str, int], seq: int, send_ts: int, rtx: int, arrival_ts: int, payload: bytes
     ):
         # If seq outside window [base_seq - WINDOW_SIZE, base_seq + WINDOW_SIZE), ignore
         if not self._in_window(seq, self.base_seq) and not self._in_window(
@@ -98,7 +99,8 @@ class GameNetReceiver(BaseGameNetAPI):
             return  # Duplicate packet; ignore
 
         latency = calc_latency(send_ts, arrival_ts)
-        self.buffer[idx] = (addr, seq, payload, arrival_ts, latency)
+        # store rtx so deliver_cb can log it
+        self.buffer[idx] = (addr, seq, payload, arrival_ts, latency, rtx)
         self.received[idx] = True
 
         # If out of order, start skip timer
@@ -116,8 +118,8 @@ class GameNetReceiver(BaseGameNetAPI):
             buf = self.buffer[idx]
 
             if buf is not None:
-                _, seq, payload, arrival_ts, latency = buf
-                self._deliver_cb(seq, CHAN_RELIABLE, payload, arrival_ts, latency)
+                _, seq, payload, arrival_ts, latency, rtx = buf
+                self._deliver_cb(seq, CHAN_RELIABLE, payload, arrival_ts, latency, rtx)
             else:
                 self.reliable_channel_metric["skipped_packets"] += 1
 

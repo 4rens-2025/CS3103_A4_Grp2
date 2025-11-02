@@ -22,8 +22,8 @@ class GameNetSender(BaseGameNetAPI):
         # Reliable channel state
         self._base_seq = 0  # smallest unacked seq in window
         self._sem = asyncio.Semaphore(WINDOW_SIZE)  # limit sender window size
-        # Buffer of packets for retransmission
-        self._buffer: List[Tuple[bytes, Tuple[str, int]] | None] = [None] * WINDOW_SIZE
+        # Buffer of packets for retransmission: (payload_bytes, dest, retrans_count)
+        self._buffer: List[Tuple[bytes, Tuple[str, int], int] | None] = [None] * WINDOW_SIZE
         self._acked = [False] * WINDOW_SIZE  # acked flags for packets in window
         self._timers = {}  # seq -> timers for retransmission
 
@@ -57,7 +57,8 @@ class GameNetSender(BaseGameNetAPI):
     @override
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
         try:
-            ch, seq, _, _ = unpack_packet(data)
+            # unpack_packet now returns (ch, seq, ts, retrans_count, payload)
+            ch, seq, _, _, _ = unpack_packet(data)
         except Exception as e:
             print(f"[ServerProtocol] bad pkt from {addr}: {e}")
             return
@@ -80,7 +81,8 @@ class GameNetSender(BaseGameNetAPI):
         """Send an unreliable packet."""
         next_seq = self._next_seq[CHAN_UNRELIABLE]
 
-        pkt = pack_packet(CHAN_UNRELIABLE, next_seq, payload.encode("utf-8"))
+        payload_bytes = payload.encode("utf-8")
+        pkt = pack_packet(CHAN_UNRELIABLE, next_seq, payload_bytes, 0)
 
         self.unreliable_channel_metric["sent_packets"] += 1
         self.transport.sendto(pkt, dest)
@@ -98,13 +100,16 @@ class GameNetSender(BaseGameNetAPI):
         self._next_seq[CHAN_RELIABLE] += 1
         self._next_seq[CHAN_RELIABLE] %= MAX_SEQ_NUM
 
-        pkt = pack_packet(CHAN_RELIABLE, next_seq, payload.encode("utf-8"))
+        payload_bytes = payload.encode("utf-8")
+        retrans_count = 0
+        pkt = pack_packet(CHAN_RELIABLE, next_seq, payload_bytes, retrans_count)
 
         self.reliable_channel_metric["sent_packets"] += 1
         self.transport.sendto(pkt, dest)
 
         idx = next_seq % WINDOW_SIZE
-        self._buffer[idx] = (pkt, dest)
+        # store payload, destination and current retrans count for future retransmits
+        self._buffer[idx] = (payload_bytes, dest, retrans_count)
         self._acked[idx] = False
         self._start_timer(next_seq)
 
@@ -125,7 +130,12 @@ class GameNetSender(BaseGameNetAPI):
             if not self._acked[seq % WINDOW_SIZE]:
                 buf = self._buffer[seq % WINDOW_SIZE]
                 if buf:
-                    pkt, dest = buf
+                    payload_bytes, dest, rtx = buf
+                    # increment retransmission count and re-pack packet
+                    rtx = (rtx + 1) & 0xFF
+                    pkt = pack_packet(CHAN_RELIABLE, seq, payload_bytes, rtx)
+                    # persist updated retrans count in buffer for future retransmits
+                    self._buffer[seq % WINDOW_SIZE] = (payload_bytes, dest, rtx)
                     self.transport.sendto(pkt, dest)
 
                 self._start_timer(seq)
