@@ -130,7 +130,7 @@ class GameNetSender(BaseGameNetAPI):
 
             # Retransmit packet
             payload, prev_restrans_count = self._buffer[seq % WINDOW_SIZE]
-            if (prev_restrans_count + 1 == MAX_RETRANSMISSION_COUNT):
+            if (prev_restrans_count == MAX_RETRANSMISSION_COUNT):
                 # If packet not reached max retrans count, we assume do not care about this packet anymore
                 self._acked[seq % WINDOW_SIZE] = True
                 self._buffer[seq % WINDOW_SIZE] = None
