@@ -12,56 +12,55 @@ from game_net_api.base import (
 from game_net_api.utils import pack_packet, unpack_packet
 
 RETRANSMISSION_TIMEOUT = 0.08  # seconds, 80 ms
-
+MAX_RETRANSMISSION_COUNT = 2**8 # 8-bits restranmission count, should never reach this threshold
 
 class GameNetSender(BaseGameNetAPI):
-    def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
+    def __init__(self, app_name: str, bind_addr: Tuple[str, int], dest_addr: Tuple[str, int]):
         super().__init__(app_name=app_name, bind_addr=bind_addr)
-        self._next_seq = [0, 0]  # [reliable, unreliable]
 
-        # Reliable channel state
-        self._base_seq = 0  # smallest unacked seq in window
+        # Generic sender states
+        self._dest_addr = dest_addr
+        self._next_reliable_seq = 0
+        self._next_unreliable_seq = 0
+
+        # Additional states for reliable channel
         self._sem = asyncio.Semaphore(WINDOW_SIZE)  # limit sender window size
-        # Buffer of packets for retransmission: (payload_bytes, dest, retrans_count)
-        self._buffer: List[Tuple[bytes, Tuple[str, int], int] | None] = [None] * WINDOW_SIZE
+        self._base_seq = 0  # smallest unacked seq in window
         self._acked = [False] * WINDOW_SIZE  # acked flags for packets in window
-        self._timers = {}  # seq -> timers for retransmission
+        self._buffer: List[Tuple[bytes, int] | None] = [None] * WINDOW_SIZE # (payload, retrans_count)
+        self._retransmission_timers = {}  # seq -> timers for retransmission
 
-        # Initialize metrics
-        self.reliable_channel_metric["sent_packets"] = 0
-        self.unreliable_channel_metric["sent_packets"] = 0
+        # Metrics
+        self.reliable_channel_metrics = { "sent_packets": 0 }
+        self.unreliable_channel_metrics = { "sent_packets": 0 }
 
-    async def send(self, payload: str, reliable: bool, dest: Tuple[str, int]) -> int:
-        """
-        Send a packet with the given payload to the destination address.
-
-        Args:
-            payload (str): The payload to send.
-            reliable (bool): Whether to send through the reliable channel.
-            dest (Tuple[str, int]): The destination address.
-        """
-        if reliable:
-            return await self._send_reliable(payload, dest)
+    async def send(self, payload: bytes, is_reliable: bool):
+        if is_reliable:
+            await self._send_reliable(payload)
         else:
-            return await self._send_unreliable(payload, dest)
+            await self._send_unreliable(payload)
 
     def stop(self):
-        # Clean up all timers on stop
-        for timer in self._timers.values():
+        for timer in self._retransmission_timers.values():
             timer.cancel()
-        self._timers.clear()
+        self._retransmission_timers.clear()
 
-        return super().stop()
+        super().stop()
 
+    # Process ACKs
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
+        if addr != self._dest_addr:
+            print(f"[WARNING] Data received from {addr} when dest_addr is {self._dest_addr}")
+            return
+        
         try:
-            # unpack_packet now returns (ch, seq, ts, retrans_count, payload)
-            ch, seq, _, _, _ = unpack_packet(data)
+            channel, seq, _, _, _ = unpack_packet(data)
         except Exception as e:
             print(f"[ServerProtocol] bad pkt from {addr}: {e}")
             return
 
-        if ch != CHAN_ACK:
+        if channel != CHAN_ACK:
+            print(f"[WARNING] Non-ACK packet received from {addr} on Sender")
             return  # Ignore non-ACK packets
 
         if not self._in_window(seq, self._base_seq):
@@ -71,88 +70,71 @@ class GameNetSender(BaseGameNetAPI):
         if self._acked[idx]:
             return  # Ignore duplicate ACKs
 
-        self._cancel_timer(seq)
         self._acked[idx] = True
+        self._buffer[idx] = None
+        self._cancel_timer(seq)
+
         self._try_advance_base()
 
-    async def _send_unreliable(self, payload: str, dest: Tuple[str, int]) -> int:
-        """Send an unreliable packet."""
-        next_seq = self._next_seq[CHAN_UNRELIABLE]
+    async def _send_unreliable(self, payload: bytes):
+        # Send packet
+        pkt = pack_packet(CHAN_UNRELIABLE, self._next_unreliable_seq, 0, payload)
+        self.transport.sendto(pkt, self._dest_addr)
 
-        payload_bytes = payload.encode("utf-8")
-        pkt = pack_packet(CHAN_UNRELIABLE, next_seq, payload_bytes, 0)
+        # Update state
+        self._next_unreliable_seq  = (self._next_unreliable_seq + 1) % MAX_SEQ_NUM
+        self.unreliable_channel_metrics["sent_packets"] += 1
 
-        self.unreliable_channel_metric["sent_packets"] += 1
-        self.transport.sendto(pkt, dest)
-
-        self._next_seq[CHAN_UNRELIABLE] += 1
-        self._next_seq[CHAN_UNRELIABLE] %= MAX_SEQ_NUM
-
-        return next_seq
-
-    async def _send_reliable(self, payload: str, dest: Tuple[str, int]) -> int:
-        """Send a reliable packet."""
+    async def _send_reliable(self, payload: bytes):
+        # Ensure can still send
         await self._sem.acquire()
 
-        next_seq = self._next_seq[CHAN_RELIABLE]
-        self._next_seq[CHAN_RELIABLE] += 1
-        self._next_seq[CHAN_RELIABLE] %= MAX_SEQ_NUM
+        # Send packet
+        seq = self._next_reliable_seq
+        pkt = pack_packet(CHAN_RELIABLE, seq, 0, payload)
+        self.transport.sendto(pkt, self._dest_addr)
 
-        payload_bytes = payload.encode("utf-8")
-        retrans_count = 0
-        pkt = pack_packet(CHAN_RELIABLE, next_seq, payload_bytes, retrans_count)
+        # Update state
+        self._next_reliable_seq = (self._next_reliable_seq + 1) % MAX_SEQ_NUM
+        self.reliable_channel_metrics["sent_packets"] += 1
 
-        self.reliable_channel_metric["sent_packets"] += 1
-        self.transport.sendto(pkt, dest)
-
-        idx = next_seq % WINDOW_SIZE
-        # store payload, destination and current retrans count for future retransmits
-        self._buffer[idx] = (payload_bytes, dest, retrans_count)
-        self._acked[idx] = False
-        self._start_timer(next_seq)
-
-        return next_seq
+        # Update additional states
+        if self._acked[seq % WINDOW_SIZE]:
+            raise Exception("ACK state should not be True")
+        self._buffer[seq % WINDOW_SIZE] = (payload, 0) # First buffered data has retrans_count = 0
+        self._start_timer(seq)
 
     def _start_timer(self, seq):
-        """Start retransmission timer for the given seq."""
-
         async def retransmit_on_timeout():
             current = asyncio.current_task()
             await asyncio.sleep(RETRANSMISSION_TIMEOUT)
 
             # Ensure the timer is still valid
-            if self._timers.get(seq) != current:
+            if self._retransmission_timers.get(seq) != current or self._acked[seq % WINDOW_SIZE]:
                 return
 
-            # Retransmit if not acked then restart timer
-            if not self._acked[seq % WINDOW_SIZE]:
-                buf = self._buffer[seq % WINDOW_SIZE]
-                if buf:
-                    payload_bytes, dest, rtx = buf
-                    # increment retransmission count and re-pack packet
-                    rtx = (rtx + 1) & 0xFF
-                    pkt = pack_packet(CHAN_RELIABLE, seq, payload_bytes, rtx)
-                    # persist updated retrans count in buffer for future retransmits
-                    self._buffer[seq % WINDOW_SIZE] = (payload_bytes, dest, rtx)
-                    self.transport.sendto(pkt, dest)
+            # Retransmit packet
+            payload, prev_restrans_count = self._buffer[seq % WINDOW_SIZE]
+            if (prev_restrans_count + 1 == MAX_RETRANSMISSION_COUNT):
+                raise RuntimeError("Should never reach max retransmission count")
+            pkt = pack_packet(CHAN_RELIABLE, seq, prev_restrans_count + 1, payload)
+            self.transport.sendto(pkt, self._dest_addr)
 
-                self._start_timer(seq)
+            # Update buffer 
+            self._buffer[seq % WINDOW_SIZE] = (payload, prev_restrans_count + 1)
 
-        self._timers[seq] = asyncio.create_task(retransmit_on_timeout())
+            # Restart timer
+            self._start_timer(seq)
+
+        self._retransmission_timers[seq] = asyncio.create_task(retransmit_on_timeout())
 
     def _cancel_timer(self, seq):
-        """Cancel retransmission timer for the given seq."""
-        if seq in self._timers:
-            self._timers[seq].cancel()
-            del self._timers[seq]
+        if seq in self._retransmission_timers:
+            self._retransmission_timers[seq].cancel()
+            del self._retransmission_timers[seq]
 
     def _try_advance_base(self):
-        """Advance the base seq if possible."""
         while self._acked[self._base_seq % WINDOW_SIZE]:
-            idx = self._base_seq % WINDOW_SIZE
-            self._buffer[idx] = None
-            self._acked[idx] = False
+            self._acked[self._base_seq % WINDOW_SIZE] = False
             self._base_seq = (self._base_seq + 1) % MAX_SEQ_NUM
-
-            # Release semaphore slot for new packet
             self._sem.release()

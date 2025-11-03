@@ -1,6 +1,7 @@
 from abc import abstractmethod
 import asyncio
 from typing import Callable, Tuple
+from dataclasses import dataclass
 
 CHAN_RELIABLE = 0
 CHAN_UNRELIABLE = 1
@@ -24,13 +25,12 @@ class CustomProtocol(asyncio.DatagramProtocol):
     def error_received(self, exc):
         print(f"[{self.app_name}] error:", exc)
 
-
 class BaseGameNetAPI:
     def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
         self.app_name = app_name
         self.bind_addr = bind_addr
-        self.reliable_channel_metric = {}
-        self.unreliable_channel_metric = {}
+        self.reliable_channel_metrics = {}
+        self.unreliable_channel_metrics = {}
 
         self._transport = None
 
@@ -50,10 +50,9 @@ class BaseGameNetAPI:
         self._transport = transport
 
     def stop(self):
-        self.transport.close()
-        self._transport = None
-
-        return self.reliable_channel_metric, self.unreliable_channel_metric
+        if self.transport is not None:
+            self.transport.close()
+            self._transport = None
 
     @abstractmethod
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):

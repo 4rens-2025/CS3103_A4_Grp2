@@ -11,21 +11,27 @@ from game_net_api.base import (
 )
 from game_net_api.utils import calc_latency, now_ms, pack_packet, unpack_packet
 
+# For each received packet, we set a timeout to indicate the longest time 
+# this received packet should stay in buffer before being delivered
 SKIP_TIMEOUT = 0.2  # seconds, 200 ms
 
 
 class GameNetReceiver(BaseGameNetAPI):
-    def __init__(self, app_name: str, bind_addr: Tuple[str, int], deliver_cb: Callable):
+    def __init__(self, app_name: str, bind_addr: Tuple[str, int], src_addr: Tuple[str, int], deliver_cb: Callable):
         super().__init__(app_name, bind_addr)
+
+        # Generic receiver states
+        self._src_addr = src_addr
         self._deliver_cb = deliver_cb
 
-        # Circular buffer of length WINDOW_SIZE
-        self.buffer: List[Tuple | None] = [None] * WINDOW_SIZE
-        self.received = [False] * WINDOW_SIZE
-        self.base_seq = 0  # smallest expected seq in window
-        self.skip_timers = {}  # seq -> skip timers
+        # Additional states for reliable channel
+        self._base_seq = 0  # smallest expected seq in window
+        self._received = [False] * WINDOW_SIZE
+        self._buffer: List[Tuple | None] = [None] * WINDOW_SIZE
+        self._skip_timers = {}  # seq -> skip timers
 
-        self.reliable_channel_metric = {
+        # Metrics
+        self.reliable_channel_metrics = {
             "received_packets": 0,
             "received_bytes": 0,
             "latency_sum_ms": 0.0,
@@ -34,7 +40,7 @@ class GameNetReceiver(BaseGameNetAPI):
             "jitter_ms": 0.0,
             "skipped_packets": 0,
         }
-        self.unreliable_channel_metric = {
+        self.unreliable_channel_metrics = {
             "received_packets": 0,
             "received_bytes": 0,
             "latency_sum_ms": 0.0,
@@ -44,145 +50,128 @@ class GameNetReceiver(BaseGameNetAPI):
         }
 
     def stop(self):
-        for timer in self.skip_timers.values():
+        for timer in self._skip_timers.values():
             timer.cancel()
-        self.skip_timers.clear()
-        return super().stop()
+        self._skip_timers.clear()
+        super().stop()
 
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
-        arrival_ts = now_ms()
+        if addr != self._src_addr:
+            print(f"[WARNING] Data received from {addr} when src_addr is {self._src_addr}")
+            return
+        
+        arrival_timestamp = now_ms()
         try:
-            # unpack_packet now returns (ch, seq, ts, retrans_count, payload)
-            ch, seq, send_ts, rtx, payload = unpack_packet(data)
+            channel, seq, retrans_count, sent_timestamp, payload = unpack_packet(data)
         except Exception as e:
             print(f"[ServerProtocol] bad pkt from {addr}: {e}")
             return
 
-        if ch == CHAN_UNRELIABLE:
-            self._handle_unreliable(addr, seq, send_ts, rtx, arrival_ts, payload)
-        elif ch == CHAN_RELIABLE:
-            self._handle_reliable(addr, seq, send_ts, rtx, arrival_ts, payload)
-        elif ch == CHAN_ACK:
+        if channel == CHAN_UNRELIABLE:
+            self._handle_unreliable(seq, retrans_count, payload, sent_timestamp, arrival_timestamp)
+        elif channel == CHAN_RELIABLE:
+            self._handle_reliable(seq, retrans_count, payload, sent_timestamp, arrival_timestamp)
+        elif channel == CHAN_ACK:
+            print(f"[WARNING] ACK packet received from {addr} on Receiver")
             pass  # Ignore ACK packets for server
 
     def _handle_unreliable(
-        self, addr: Tuple[str, int], seq: int, send_ts: int, rtx: int, arrival_ts: int, payload: bytes
+        self, seq: int, retrans_count: int, payload: bytes, sent_timestamp: int, arrival_timestamp: int
     ):
-        # Do nothing and call the deliver callback
-        latency = calc_latency(send_ts, arrival_ts)
-        self._deliver_cb(seq, CHAN_UNRELIABLE, payload, arrival_ts, latency, rtx)
+        latency = calc_latency(sent_timestamp, arrival_timestamp)
+        self._deliver_cb(seq, False, retrans_count, payload, arrival_timestamp, latency)
 
-        self._update_metrics(CHAN_UNRELIABLE, send_ts, arrival_ts, payload)
+        self._update_metrics(CHAN_UNRELIABLE, sent_timestamp, arrival_timestamp, payload)
 
     def _handle_reliable(
-        self, addr: Tuple[str, int], seq: int, send_ts: int, rtx: int, arrival_ts: int, payload: bytes
+        self, seq: int, retrans_count: int, payload: bytes, sent_timestamp: int, arrival_timestamp: int
     ):
         # If seq outside window [base_seq - WINDOW_SIZE, base_seq + WINDOW_SIZE), ignore
-        if not self._in_window(seq, self.base_seq) and not self._in_window(
-            seq, (self.base_seq - WINDOW_SIZE) % MAX_SEQ_NUM
+        if not self._in_window(seq, self._base_seq) and not self._in_window(
+            seq, (self._base_seq - WINDOW_SIZE) % MAX_SEQ_NUM
         ):
             return
 
         # If within window, immediately send ACK
-        ack_pkt = self._make_ack(seq)
-        self.transport.sendto(ack_pkt, addr)
+        ack_pkt = pack_packet(CHAN_ACK, seq)
+        self.transport.sendto(ack_pkt, self._src_addr)
 
-        # If seq is before base_seq, it is a duplicate packet; ignore
-        if not self._in_window(seq, self.base_seq):
+        # Ignore duplicate packet
+        if not self._in_window(seq, self._base_seq) or self._received[seq % WINDOW_SIZE]:
             return
 
-        idx = seq % WINDOW_SIZE
-
-        if self.received[idx]:
-            return  # Duplicate packet; ignore
-
-        latency = calc_latency(send_ts, arrival_ts)
-        # store rtx so deliver_cb can log it
-        self.buffer[idx] = (addr, seq, payload, arrival_ts, latency, rtx)
-        self.received[idx] = True
+        latency = calc_latency(sent_timestamp, arrival_timestamp)
+        self._buffer[seq % WINDOW_SIZE] = (seq, retrans_count, payload, arrival_timestamp, latency)
+        self._received[seq % WINDOW_SIZE] = True
 
         # If out of order, start skip timer
-        if seq != self.base_seq:
-            self._start_skip_timer(seq, addr)
-        else:
-            self._try_deliver()
+        if seq != self._base_seq:
+            self._start_skip_timer(seq)
 
-        self._update_metrics(CHAN_RELIABLE, send_ts, arrival_ts, payload)
+        self._try_deliver()
+        self._update_metrics(CHAN_RELIABLE, sent_timestamp, arrival_timestamp, payload)
 
     def _try_deliver(self):
-        """Try to deliver in-order packets from the buffer."""
-        while self.received[self.base_seq % WINDOW_SIZE]:
-            idx = self.base_seq % WINDOW_SIZE
-            buf = self.buffer[idx]
-
+        while self._received[self._base_seq % WINDOW_SIZE]:
+            buf = self._buffer[self._base_seq % WINDOW_SIZE]
             if buf is not None:
-                _, seq, payload, arrival_ts, latency, rtx = buf
-                self._deliver_cb(seq, CHAN_RELIABLE, payload, arrival_ts, latency, rtx)
+                seq, retrans_count, payload, arrival_timestamp, latency = buf
+                self._deliver_cb(seq, True, retrans_count, payload, arrival_timestamp, latency)
             else:
-                self.reliable_channel_metric["skipped_packets"] += 1
+                self.reliable_channel_metrics["skipped_packets"] += 1
 
-            if self.base_seq in self.skip_timers:
-                self.skip_timers[self.base_seq].cancel()
-                del self.skip_timers[self.base_seq]
+            if self._base_seq in self._skip_timers:
+                self._skip_timers[self._base_seq].cancel()
+                del self._skip_timers[self._base_seq]
 
-            self.buffer[idx] = None
-            self.received[idx] = False
-            self.base_seq = (self.base_seq + 1) % MAX_SEQ_NUM
+            self._buffer[self._base_seq % WINDOW_SIZE] = None
+            self._received[self._base_seq % WINDOW_SIZE] = False
+            self._base_seq = (self._base_seq + 1) % MAX_SEQ_NUM
 
-    def _start_skip_timer(self, seq: int, addr: Tuple[str, int]):
-        """Start a skip timer for the given seq number."""
-
-        async def skip_packet():
-            """Skip packets before seq after timeout."""
+    def _start_skip_timer(self, seq: int):
+        async def skip_packets():
             current = asyncio.current_task()
             await asyncio.sleep(SKIP_TIMEOUT)
 
             # Ensure the timer is still valid
-            if self.skip_timers.get(seq) != current:
+            if self._skip_timers.get(seq) != current:
                 return
 
             # Skip lost packets before seq on timeout
             for offset in range(WINDOW_SIZE):
-                check_seq = (self.base_seq + offset) % MAX_SEQ_NUM
+                check_seq = (self._base_seq + offset) % MAX_SEQ_NUM
                 if check_seq == seq:
                     break
 
-                idx = check_seq % WINDOW_SIZE
-
-                if self.received[idx]:
+                if self._received[check_seq % WINDOW_SIZE]:
                     continue
 
-                ack_pkt = self._make_ack(check_seq)
-                self.transport.sendto(ack_pkt, addr)
-                self.received[idx] = True  # Mark as received to skip
+                ack_pkt = pack_packet(CHAN_ACK, check_seq)
+                self.transport.sendto(ack_pkt, self._src_addr)
+                self._received[check_seq % WINDOW_SIZE] = True  # Mark as received to skip
 
             self._try_deliver()
 
-        self.skip_timers[seq] = asyncio.create_task(skip_packet())
+        self._skip_timers[seq] = asyncio.create_task(skip_packets())
 
-    def _make_ack(self, seq: int) -> bytes:
-        """Create an ACK packet for the given seq number."""
-        return pack_packet(CHAN_ACK, seq)
+    def _update_metrics(self, channel: int, sent_timestamp: int, arrival_timestamp: int, payload: bytes):
+        metrics = self.reliable_channel_metrics if channel == CHAN_RELIABLE else self.unreliable_channel_metrics
 
-    def _update_metrics(self, ch: int, send_ts: int, arrival_ms: int, payload: bytes):
-        metric = self.reliable_channel_metric if ch == CHAN_RELIABLE else self.unreliable_channel_metric
+        transit_ms = calc_latency(sent_timestamp, arrival_timestamp)
 
-        # Calculate one-way latency
-        transit_ms = calc_latency(send_ts, arrival_ms)
-
-        if "prev_transit_ms" not in metric:
-            metric["prev_transit_ms"] = transit_ms
+        if "prev_transit_ms" not in metrics:
+            metrics["prev_transit_ms"] = transit_ms
 
         # RFC 3550 jitter calculation (https://datatracker.ietf.org/doc/html/rfc3550#appendix-A.8)
-        D = transit_ms - metric["prev_transit_ms"]
-        metric["prev_transit_ms"] = transit_ms
-        metric["jitter_ms"] += (abs(D) - metric["jitter_ms"]) / 16.0
+        D = transit_ms - metrics["prev_transit_ms"]
+        metrics["prev_transit_ms"] = transit_ms
+        metrics["jitter_ms"] += (abs(D) - metrics["jitter_ms"]) / 16.0
 
         # Update latency stats
-        metric["latency_sum_ms"] += transit_ms
-        metric["latency_min_ms"] = min(metric["latency_min_ms"], transit_ms)
-        metric["latency_max_ms"] = max(metric["latency_max_ms"], transit_ms)
+        metrics["latency_sum_ms"] += transit_ms
+        metrics["latency_min_ms"] = min(metrics["latency_min_ms"], transit_ms)
+        metrics["latency_max_ms"] = max(metrics["latency_max_ms"], transit_ms)
 
         # Packet and byte counters
-        metric["received_packets"] += 1
-        metric["received_bytes"] += len(payload)
+        metrics["received_packets"] += 1
+        metrics["received_bytes"] += len(payload)

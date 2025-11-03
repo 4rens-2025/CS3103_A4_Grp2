@@ -5,24 +5,24 @@ from game_net_api import GameNetSender
 
 
 class SenderApp:
-    def __init__(self, addr: Tuple[str, int]):
+    def __init__(self, addr: Tuple[str, int], dest_addr: Tuple[str, int]):
         self._addr = addr
-        self._sender = GameNetSender("Sender", self._addr)
+        self._dest_addr = dest_addr
+        self._sender = GameNetSender("Sender", self._addr, self._dest_addr)
 
-    async def run(self, receiver_addr: Tuple[str, int], rate: float, duration: float):
-        """Run the sender to send packets to the receiver at a specified rate and duration."""
+    async def run(self, rate: float, duration: float):
+        """Run the sender to send packets to the dest_addr at a specified rate and duration."""
         await self._sender.start()
 
         # Send packets on both reliable and unreliable channels
         tasks = [
             asyncio.create_task(
                 self._send_packets(
-                    dest=receiver_addr,
                     rate=rate,
-                    reliable=reliable,
+                    is_reliable=is_reliable,
                 )
             )
-            for reliable in [True, False]
+            for is_reliable in [True, False]
         ]
 
         # Use wait_for so we can cancel pending tasks when duration elapses.
@@ -41,17 +41,9 @@ class SenderApp:
             self._sender.stop()
 
     def get_metrics(self):
-        return self._sender.reliable_channel_metric, self._sender.unreliable_channel_metric
+        return self._sender.reliable_channel_metrics, self._sender.unreliable_channel_metrics
 
-    async def _send_packets(self, dest: Tuple[str, int], rate: float, reliable: bool):
-        """
-        Send packets at the specified rate until cancelled by the caller.
-
-        Args:
-            dest (Tuple[str, int]): Destination address.
-            rate (float): Packets per second.
-            reliable (bool): Whether to use reliable channel.
-        """
+    async def _send_packets(self, rate: float, is_reliable: bool):
         interval = 1.0 / rate
         loop = asyncio.get_running_loop()
         t0 = loop.time()
@@ -66,8 +58,7 @@ class SenderApp:
                 await asyncio.sleep(sleep_for)
             # If cancellation requested, awaiting send will raise CancelledError
             await self._sender.send(
-                f'{"reliable" if reliable else "unreliable"}-{packet_idx}',
-                reliable=reliable,
-                dest=dest,
+                f'{"reliable" if is_reliable else "unreliable"}-{packet_idx}'.encode("utf-8"),
+                is_reliable,
             )
             packet_idx += 1

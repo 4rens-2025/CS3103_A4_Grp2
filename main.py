@@ -15,7 +15,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     received_bytes = receiver_metric.get("received_bytes", 0)
 
     delivery_ratio = (received_packets / sent_packets * 100) if sent_packets > 0 else 0.0
-    throughput_kbps = (received_bytes) / (duration_s)  # bytes per second
+    throughput = (received_bytes) / (duration_s)  # bytes per second
 
     avg_latency = (
         receiver_metric.get("latency_sum_ms", 0.0) / received_packets if received_packets > 0 else 0.0
@@ -29,7 +29,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     print(f"Received packets:   {received_packets}")
     print(f"Skipped packets:    {skipped_packets}")
     print(f"Delivery ratio:     {delivery_ratio:.2f}%")
-    print(f"Throughput:         {throughput_kbps:.2f} Bps")
+    print(f"Throughput:         {throughput:.2f} Byte/s")
     print(f"Latency (avg):      {avg_latency:.2f} ms")
     print(f"Latency (min/max):  {latency_min:.2f} / {latency_max:.2f} ms")
     print(f"Jitter (RFC3550):   {jitter:.2f} ms")
@@ -40,8 +40,8 @@ async def main():
     receiver_addr = ("127.0.0.1", 50000)
     sender_addr = ("127.0.0.1", 50001)
 
-    receiver_app = ReceiverApp(receiver_addr)
-    sender_app = SenderApp(sender_addr)
+    receiver_app = ReceiverApp(receiver_addr, sender_addr)
+    sender_app = SenderApp(sender_addr, receiver_addr)
 
     send_rate = 100.0  # packets per second
     test_duration = 30.0  # seconds
@@ -54,7 +54,7 @@ async def main():
     def start_sender_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(sender_app.run(receiver_addr, send_rate, test_duration + 5.0))
+        loop.run_until_complete(sender_app.run(send_rate, test_duration + 5.0))
 
     # Start receiver and sender in separate threads
     t1 = threading.Thread(target=start_receiver_loop)
