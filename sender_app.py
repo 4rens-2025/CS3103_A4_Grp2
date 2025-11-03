@@ -5,14 +5,14 @@ from game_net_api import GameNetSender
 
 
 class SenderApp:
-    def __init__(self, addr: Tuple[str, int], dest_addr: Tuple[str, int]):
-        self._addr = addr
+    def __init__(self,  bind_addr:Tuple[str, int], dest_addr: Tuple[str, int]):
+        self._bind_addr = bind_addr
         self._dest_addr = dest_addr
-        self._sender = GameNetSender("Sender", self._addr, self._dest_addr)
+        self._sender = GameNetSender("Sender")
 
     async def run(self, rate: float, duration: float):
         """Run the sender to send packets to the dest_addr at a specified rate and duration."""
-        await self._sender.start()
+        await self._sender.connect(self._dest_addr, self._bind_addr)
 
         # Send packets on both reliable and unreliable channels
         tasks = [
@@ -38,7 +38,7 @@ class SenderApp:
             await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             # Ensure sender timers/transports are stopped
-            self._sender.stop()
+            await self._sender.close()
 
     def get_metrics(self):
         return self._sender.reliable_channel_metrics, self._sender.unreliable_channel_metrics

@@ -37,11 +37,11 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
 
 
 async def main():
+    # Fix sender-receiver address for testing with custom network conditions
     receiver_addr = ("127.0.0.1", 50000)
-    sender_addr = ("127.0.0.1", 50001)
-
-    receiver_app = ReceiverApp(receiver_addr, sender_addr)
-    sender_app = SenderApp(sender_addr, receiver_addr)
+    sender_addr = ("127.0.0.1", 50001) 
+    receiver_app = ReceiverApp(receiver_addr) # listen on receiver_addr
+    sender_app = SenderApp(sender_addr, receiver_addr) # send to receiver_addr
 
     send_rate = 100.0  # packets per second
     test_duration = 30.0  # seconds
@@ -49,12 +49,12 @@ async def main():
     def start_receiver_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(receiver_app.run(test_duration))
+        loop.run_until_complete(receiver_app.run(test_duration + 5.0))
 
     def start_sender_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(sender_app.run(send_rate, test_duration + 5.0))
+        loop.run_until_complete(sender_app.run(send_rate, test_duration))
 
     # Start receiver and sender in separate threads
     t1 = threading.Thread(target=start_receiver_loop)

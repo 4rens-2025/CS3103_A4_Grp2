@@ -1,7 +1,6 @@
 from abc import abstractmethod
 import asyncio
 from typing import Callable, Tuple
-from dataclasses import dataclass
 
 CHAN_RELIABLE = 0
 CHAN_UNRELIABLE = 1
@@ -13,45 +12,45 @@ WINDOW_SIZE = 128  # packets
 
 class CustomProtocol(asyncio.DatagramProtocol):
     def __init__(self, app_name: str, on_receive: Callable[[bytes, Tuple[str, int]], None]):
-        self.app_name = app_name
-        self.on_receive = on_receive
+        self._app_name = app_name
+        self._on_receive = on_receive
 
     def connection_made(self, transport):
-        print(f"[GameNetAPI({self.app_name})] listening on {transport.get_extra_info('sockname')}")
+        print(f"[GameNetAPI({self._app_name})] listening on {transport.get_extra_info('sockname')}")
 
     def datagram_received(self, data, addr):
-        self.on_receive(data, addr)
+        self._on_receive(data, addr)
 
     def error_received(self, exc):
-        print(f"[{self.app_name}] error:", exc)
+        print(f"[{self._app_name}] error:", exc)
 
 class BaseGameNetAPI:
-    def __init__(self, app_name: str, bind_addr: Tuple[str, int]):
-        self.app_name = app_name
-        self.bind_addr = bind_addr
+    def __init__(self, app_name: str):
+        self._app_name = app_name
+        self._transport = None
+
         self.reliable_channel_metrics = {}
         self.unreliable_channel_metrics = {}
-
-        self._transport = None
 
     @property
     def transport(self):
         if self._transport is None:
-            raise RuntimeError("not started")
+            raise RuntimeError("Not started")
 
         return self._transport
-
-    async def start(self):
+    
+    async def _start(self, bind_addr: Tuple[str, int]):
         if self._transport is not None:
-            return
+            raise RuntimeError("Already started")
+        
         loop = asyncio.get_running_loop()
-        protocol = CustomProtocol(app_name=self.app_name, on_receive=self._process_datagram)
-        transport, _ = await loop.create_datagram_endpoint(lambda: protocol, local_addr=self.bind_addr)
+        protocol = CustomProtocol(app_name=self._app_name, on_receive=self._process_datagram)
+        transport, _ = await loop.create_datagram_endpoint(lambda: protocol, local_addr=bind_addr)
         self._transport = transport
 
-    def stop(self):
-        if self.transport is not None:
-            self.transport.close()
+    def _stop(self):
+        if self._transport is not None:
+            self._transport.close()
             self._transport = None
 
     @abstractmethod

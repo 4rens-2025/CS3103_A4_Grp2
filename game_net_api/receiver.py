@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Callable, List, Tuple
 
 from game_net_api.base import (
@@ -11,18 +12,43 @@ from game_net_api.base import (
 )
 from game_net_api.utils import calc_latency, now_ms, pack_packet, unpack_packet
 
+from dataclasses import dataclass
+
+@dataclass
+class Packet:
+    seq: int
+    is_reliable: bool
+    retransmissions: int
+    timestamp: int
+    latency: int
+    payload: bytes
+
+    def __str__(self):
+        try:
+            payload_str = self.payload.decode("utf-8")
+        except Exception:
+            payload_str = repr(self.payload)
+
+        channel_str = "Reliable" if self.is_reliable else "Unreliable"
+        return (
+            f"seq={self.seq}, channel={channel_str}, "
+            f"retransmissions={self.retransmissions}, timestamp={self.timestamp}, "
+            f"RTT(one-way)={self.latency}ms, payload={payload_str}"
+        )
+
+
 # For each received packet, we set a timeout to indicate the longest time 
 # this received packet should stay in buffer before being delivered
 SKIP_TIMEOUT = 0.2  # seconds, 200 ms
 
 
 class GameNetReceiver(BaseGameNetAPI):
-    def __init__(self, app_name: str, bind_addr: Tuple[str, int], src_addr: Tuple[str, int], deliver_cb: Callable):
-        super().__init__(app_name, bind_addr)
+    def __init__(self, app_name: str):
+        super().__init__(app_name)
 
         # Generic receiver states
-        self._src_addr = src_addr
-        self._deliver_cb = deliver_cb
+        self._src_addr = None
+        self._deliver_cb = None
 
         # Additional states for reliable channel
         self._base_seq = 0  # smallest expected seq in window
@@ -49,15 +75,23 @@ class GameNetReceiver(BaseGameNetAPI):
             "jitter_ms": 0.0,
         }
 
+    async def listenOnce(self, bind_addr: Tuple[str, int], deliver_cb: Callable[[Packet], None]):
+        await self._start(bind_addr)
+        self._deliver_cb = deliver_cb
+
     def stop(self):
         for timer in self._skip_timers.values():
             timer.cancel()
         self._skip_timers.clear()
-        super().stop()
+        self._stop()
 
+    # Assume that only accept connection from single sender
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
+        if self._src_addr is None:
+            self._src_addr = addr
+
         if addr != self._src_addr:
-            print(f"[WARNING] Data received from {addr} when src_addr is {self._src_addr}")
+            print(f"[WARNING] Data received from {addr} when src_addr is {self._src_addr}, the server only accepts listening to single source.")
             return
         
         arrival_timestamp = now_ms()
@@ -79,7 +113,7 @@ class GameNetReceiver(BaseGameNetAPI):
         self, seq: int, retrans_count: int, payload: bytes, sent_timestamp: int, arrival_timestamp: int
     ):
         latency = calc_latency(sent_timestamp, arrival_timestamp)
-        self._deliver_cb(seq, False, retrans_count, payload, arrival_timestamp, latency)
+        self._deliver_cb(Packet(seq, False, retrans_count, arrival_timestamp, latency, payload))
 
         self._update_metrics(CHAN_UNRELIABLE, sent_timestamp, arrival_timestamp, payload)
 
@@ -116,7 +150,7 @@ class GameNetReceiver(BaseGameNetAPI):
             buf = self._buffer[self._base_seq % WINDOW_SIZE]
             if buf is not None:
                 seq, retrans_count, payload, arrival_timestamp, latency = buf
-                self._deliver_cb(seq, True, retrans_count, payload, arrival_timestamp, latency)
+                self._deliver_cb(Packet(seq, True, retrans_count, arrival_timestamp, latency, payload))
             else:
                 self.reliable_channel_metrics["skipped_packets"] += 1
 

@@ -12,14 +12,14 @@ from game_net_api.base import (
 from game_net_api.utils import pack_packet, unpack_packet
 
 RETRANSMISSION_TIMEOUT = 0.08  # seconds, 80 ms
-MAX_RETRANSMISSION_COUNT = 2**8 # 8-bits restranmission count, should never reach this threshold
+MAX_RETRANSMISSION_COUNT = 10 
 
 class GameNetSender(BaseGameNetAPI):
-    def __init__(self, app_name: str, bind_addr: Tuple[str, int], dest_addr: Tuple[str, int]):
-        super().__init__(app_name=app_name, bind_addr=bind_addr)
+    def __init__(self, app_name: str):
+        super().__init__(app_name=app_name)
 
         # Generic sender states
-        self._dest_addr = dest_addr
+        self._dest_addr = None
         self._next_reliable_seq = 0
         self._next_unreliable_seq = 0
 
@@ -34,19 +34,34 @@ class GameNetSender(BaseGameNetAPI):
         self.reliable_channel_metrics = { "sent_packets": 0 }
         self.unreliable_channel_metrics = { "sent_packets": 0 }
 
+    async def connect(self, dest_addr: Tuple[str, int], bind_addr: Tuple[str, int] = None):
+        addr = bind_addr if bind_addr is not None else ('0.0.0.0', 0)
+        await self._start(addr)
+        self._dest_addr = dest_addr
+
     async def send(self, payload: bytes, is_reliable: bool):
         if is_reliable:
             await self._send_reliable(payload)
         else:
             await self._send_unreliable(payload)
 
-    def stop(self):
+    async def close(self, timeout: float = 2.0):
+        await self._wait_for_retransmissions_complete(timeout)
+        self._stop()
+
+    async def _wait_for_retransmissions_complete(self, timeout: float = 2.0):
+        async def wait_for_buffers_empty():
+            while not all(buf is None for buf in self._buffer):
+                await asyncio.sleep(0.01)  # small delay to yield control
+        try:
+            await asyncio.wait_for(wait_for_buffers_empty(), timeout)
+        except asyncio.TimeoutError:
+            print("[WARNING] Timeout waiting for ACKs, stopping anyway.")
+    
         for timer in self._retransmission_timers.values():
             timer.cancel()
         self._retransmission_timers.clear()
-
-        super().stop()
-
+    
     # Process ACKs
     def _process_datagram(self, data: bytes, addr: Tuple[str, int]):
         if addr != self._dest_addr:
@@ -116,7 +131,13 @@ class GameNetSender(BaseGameNetAPI):
             # Retransmit packet
             payload, prev_restrans_count = self._buffer[seq % WINDOW_SIZE]
             if (prev_restrans_count + 1 == MAX_RETRANSMISSION_COUNT):
-                raise RuntimeError("Should never reach max retransmission count")
+                # If packet not reached max retrans count, we assume do not care about this packet anymore
+                self._acked[seq % WINDOW_SIZE] = True
+                self._buffer[seq % WINDOW_SIZE] = None
+                self._try_advance_base()
+                return
+                
+            
             pkt = pack_packet(CHAN_RELIABLE, seq, prev_restrans_count + 1, payload)
             self.transport.sendto(pkt, self._dest_addr)
 
