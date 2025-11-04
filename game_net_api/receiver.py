@@ -55,7 +55,7 @@ class GameNetReceiver(BaseGameNetAPI):
 
         # Metrics
         self.reliable_channel_metrics = {
-            "received_packets": 0,
+            "delivered_packets": 0,
             "received_bytes": 0,
             "latency_sum_ms": 0.0,
             "latency_min_ms": float("inf"),
@@ -64,7 +64,7 @@ class GameNetReceiver(BaseGameNetAPI):
             "skipped_packets": 0,
         }
         self.unreliable_channel_metrics = {
-            "received_packets": 0,
+            "delivered_packets": 0,
             "received_bytes": 0,
             "latency_sum_ms": 0.0,
             "latency_min_ms": float("inf"),
@@ -195,5 +195,5 @@ class GameNetReceiver(BaseGameNetAPI):
         metrics["latency_max_ms"] = max(metrics["latency_max_ms"], latency)
 
         # Packet and byte counters
-        metrics["received_packets"] += 1
+        metrics["delivered_packets"] += 1
         metrics["received_bytes"] += len(payload)

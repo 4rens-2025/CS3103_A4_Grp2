@@ -11,15 +11,15 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     """
     sent_packets = sender_metric.get("sent_packets", 0)
     retransmissions = sender_metric.get("retransmissions", 0)
-    received_packets = receiver_metric.get("received_packets", 0)
+    delivered_packets = receiver_metric.get("delivered_packets", 0)
     skipped_packets = receiver_metric.get("skipped_packets", 0)
     received_bytes = receiver_metric.get("received_bytes", 0)
 
-    delivery_ratio = (received_packets / sent_packets * 100) if sent_packets > 0 else 0.0
+    delivery_ratio = (delivered_packets / sent_packets * 100) if sent_packets > 0 else 0.0
     throughput = (received_bytes) / (duration_s)  # bytes per second
 
     avg_latency = (
-        receiver_metric.get("latency_sum_ms", 0.0) / received_packets if received_packets > 0 else 0.0
+        receiver_metric.get("latency_sum_ms", 0.0) / delivered_packets if delivered_packets > 0 else 0.0
     )
     jitter = receiver_metric.get("jitter_ms", 0.0)
     latency_min = receiver_metric.get("latency_min_ms", 0.0)
@@ -28,7 +28,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     print("--------------------------------------------------")
     print(f"Sent packets:       {sent_packets}")
     print(f"Retransmissions:    {retransmissions}")
-    print(f"Received packets:   {received_packets}")
+    print(f"Delivered packets:  {delivered_packets}")
     print(f"Skipped packets:    {skipped_packets}")
     print(f"Delivery ratio:     {delivery_ratio:.2f}%")
     print(f"Throughput:         {throughput:.2f} Byte/s")
