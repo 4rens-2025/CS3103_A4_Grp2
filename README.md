@@ -33,3 +33,11 @@ chmod +x netem-cleanup.sh
 | **Extreme stress**   | Harsh conditions                   | `./netem-setup.sh 300ms 30ms 15%` |
 
 > The script supports positional arguments: `./netem-setup.sh [delay] [jitter] [loss]`
+
+## VM environment
+We provided a `VagrantFile` that provisions a VM using `VirtualBox` for you to test the custom protocol in a sandbox environment.
+
+## Running analysis and plotting charts
+In the `analysis/` folder, there are 2 scripts for running automated simulation and collects the metrics for analysis. 
+- Run the simulation via `run_analysis.sh`, which will collect metrics used for analysis in `results.csv`
+- Run `python3 plot_results.py` to plot the charts of the results
