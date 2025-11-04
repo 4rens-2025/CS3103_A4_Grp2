@@ -2,8 +2,8 @@ from abc import abstractmethod
 import asyncio
 from typing import Callable, Tuple
 
-CHAN_RELIABLE = 0
-CHAN_UNRELIABLE = 1
+CHAN_UNRELIABLE = 0
+CHAN_RELIABLE = 1
 CHAN_ACK = 2
 
 MAX_SEQ_NUM = 2**16  # 16-bit sequence number

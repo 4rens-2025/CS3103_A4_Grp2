@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "Starting automated analysis..."
+
+# --- Configuration ---
+# 1. List of packet loss levels to test
+LOSS_LEVELS="0% 1% 2% 3% 5% 8% 10% 15% 20% 30% 50%"
+
+# 2. Network conditions to keep constant
+DELAY="50ms"
+JITTER="5ms"
+
+# 3. Your scripts
+TC_SCRIPT="../netem-setup.sh"    
+TC_CLEANUP_SCRIPT="../netem-cleanup.sh" 
+TEST_SCRIPT="python3 ../main.py"   
+                                
+
+# 4. Output files
+RAW_OUTPUT_FILE="output.tmp"
+FINAL_CSV_FILE="results.csv"
+
+# --- Setup ---
+# 1. Make sure tc script is executable
+chmod +x "$TC_SCRIPT" "$TC_CLEANUP_SCRIPT" 
+
+# 2. Create the CSV file and write the header
+echo "loss,unrel_delivery_ratio,unrel_throughput,unrel_latency_avg,unrel_jitter,rel_delivery_ratio,rel_throughput,rel_latency_avg,rel_jitter,rel_skipped" > $FINAL_CSV_FILE
+
+# --- Test Loop ---
+for LOSS in $LOSS_LEVELS; do
+    echo "-----------------------------------"
+    echo "Running test with $LOSS loss..."
+
+    # 1. Set network conditions
+    echo "  Setting netem: $DELAY delay, $JITTER jitter, $LOSS loss"
+    "$TC_SCRIPT" "$DELAY" "$JITTER" "$LOSS" > /dev/null
+
+    # 2. Run your Python test and capture its summary
+    #    (This will take 30s each time)
+    $TEST_SCRIPT > $RAW_OUTPUT_FILE
+
+    # 3. Parse the output.tmp file to extract metrics.
+    # We use 'head -n 1' for the first match (Unreliable)
+    # and 'tail -n 1' for the second match (Reliable).
+
+    # Unreliable Metrics
+    unrel_delivery_ratio=$(grep "Delivery ratio:" $RAW_OUTPUT_FILE | head -n 1 | awk '{print $3}' | sed 's/%//')
+    unrel_throughput=$(grep "Throughput:" $RAW_OUTPUT_FILE | head -n 1 | awk '{print $2}')
+    unrel_latency_avg=$(grep "Latency (avg):" $RAW_OUTPUT_FILE | head -n 1 | awk '{print $3}')
+    unrel_jitter=$(grep "Jitter (RFC3550):" $RAW_OUTPUT_FILE | head -n 1 | awk '{print $3}')
+
+    # Reliable Metrics
+    rel_delivery_ratio=$(grep "Delivery ratio:" $RAW_OUTPUT_FILE | tail -n 1 | awk '{print $3}' | sed 's/%//')
+    rel_throughput=$(grep "Throughput:" $RAW_OUTPUT_FILE | tail -n 1 | awk '{print $2}')
+    rel_latency_avg=$(grep "Latency (avg):" $RAW_OUTPUT_FILE | tail -n 1 | awk '{print $3}')
+    rel_jitter=$(grep "Jitter (RFC3550):" $RAW_OUTPUT_FILE | tail -n 1 | awk '{print $3}')
+    rel_skipped=$(grep "Skipped packets:" $RAW_OUTPUT_FILE | tail -n 1 | awk '{print $3}')
+
+    # 4. Save to CSV
+    # We remove the '%' sign from LOSS for a clean numeric value in the CSV
+    LOSS_VAL=$(echo $LOSS | sed 's/%//')
+    echo "$LOSS_VAL,$unrel_delivery_ratio,$unrel_throughput,$unrel_latency_avg,$unrel_jitter,$rel_delivery_ratio,$rel_throughput,$rel_latency_avg,$rel_jitter,$rel_skipped" >> $FINAL_CSV_FILE
+
+    echo "  Test complete. Data saved."
+
+done
+
+# --- Cleanup ---
+"$TC_CLEANUP_SCRIPT" 
+rm $RAW_OUTPUT_FILE
+echo "-----------------------------------"
+echo "All tests finished. Results saved to $FINAL_CSV_FILE"

@@ -1,0 +1,114 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+
+# --- Configuration ---
+INPUT_CSV = 'results.csv'
+OUTPUT_DIR = 'charts'
+# ---
+
+def plot_throughput(df):
+    """Plots Throughput vs. Packet Loss"""
+    plt.figure(figsize=(10, 6))
+    
+    # Convert Byte/s to kByte/s for easier reading
+    plt.plot(df['loss'], df['unrel_throughput'] / 1024, marker='o', linestyle='--', label='Unreliable Channel')
+    plt.plot(df['loss'], df['rel_throughput'] / 1024, marker='s', linestyle='-', label='Reliable Channel')
+    
+    plt.title('Protocol Throughput vs. Packet Loss', fontsize=16)
+    plt.xlabel('Packet Loss (%)')
+    plt.ylabel('Throughput (kByte/s)')
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.ylim(bottom=0) # Throughput can't be negative
+    
+    output_path = os.path.join(OUTPUT_DIR, 'throughput_vs_loss.png')
+    plt.savefig(output_path)
+    print(f"Saved chart: {output_path}")
+
+def plot_latency(df):
+    """Plots Average Latency vs. Packet Loss"""
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(df['loss'], df['unrel_latency_avg'], marker='o', linestyle='--', label='Unreliable Channel')
+    plt.plot(df['loss'], df['rel_latency_avg'], marker='s', linestyle='-', label='Reliable Channel')
+    
+    plt.title('Average Latency vs. Packet Loss', fontsize=16)
+    plt.xlabel('Packet Loss (%)')
+    plt.ylabel('Average Latency (ms)')
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.ylim(bottom=0)
+    
+    output_path = os.path.join(OUTPUT_DIR, 'latency_vs_loss.png')
+    plt.savefig(output_path)
+    print(f"Saved chart: {output_path}")
+
+def plot_jitter(df):
+    """Plots Jitter vs. Packet Loss"""
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(df['loss'], df['unrel_jitter'], marker='o', linestyle='--', label='Unreliable Channel')
+    plt.plot(df['loss'], df['rel_jitter'], marker='s', linestyle='-', label='Reliable Channel')
+    
+    plt.title('Jitter (RFC3550) vs. Packet Loss', fontsize=16)
+    plt.xlabel('Packet Loss (%)')
+    plt.ylabel('Jitter (ms)')
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.ylim(bottom=0)
+    
+    output_path = os.path.join(OUTPUT_DIR, 'jitter_vs_loss.png')
+    plt.savefig(output_path)
+    print(f"Saved chart: {output_path}")
+
+def plot_delivery_ratio(df):
+    """Plots Delivery/Skip Ratio vs. Packet Loss (Very insightful!)"""
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(df['loss'], df['unrel_delivery_ratio'], marker='o', linestyle='--', label='Unreliable (Delivered)')
+    plt.plot(df['loss'], df['rel_delivery_ratio'], marker='s', linestyle='-', label='Reliable (Delivered)')
+    
+    # Plot skipped packets on a secondary y-axis if values are small
+    # For this, we'll just plot it on the same axis
+    plt.plot(df['loss'], (df['rel_skipped'] / 3000) * 100, marker='x', linestyle=':', label='Reliable (Skipped %)')
+    
+    plt.title('Packet Delivery & Skip Rate vs. Packet Loss', fontsize=16)
+    plt.xlabel('Packet Loss (%)')
+    plt.ylabel('Delivery Rate (%)')
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.ylim(0, 105) # Percentage 0-100
+    
+    output_path = os.path.join(OUTPUT_DIR, 'delivery_ratio.png')
+    plt.savefig(output_path)
+    print(f"Saved chart: {output_path}")
+
+def main():
+    if not os.path.exists(INPUT_CSV):
+        print(f"Error: {INPUT_CSV} not found.")
+        print("Please run the ./run_analysis.sh script first.")
+        return
+
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    # Load data
+    df = pd.read_csv(INPUT_CSV)
+    
+    if df.empty:
+        print("Error: results.csv is empty.")
+        return
+        
+    print(f"Loaded {len(df)} data points from {INPUT_CSV}")
+
+    # Create plots
+    plot_throughput(df)
+    plot_latency(df)
+    plot_jitter(df)
+    plot_delivery_ratio(df)
+
+    print("All plots generated in 'charts' directory.")
+
+if __name__ == "__main__":
+    main()
