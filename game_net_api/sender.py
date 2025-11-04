@@ -11,8 +11,8 @@ from game_net_api.base import (
 )
 from game_net_api.utils import pack_packet, unpack_packet
 
-RETRANSMISSION_TIMEOUT = 0.08  # seconds, 80 ms
-MAX_RETRANSMISSION_COUNT = 10 
+RETRANSMISSION_TIMEOUT = 0.1  # seconds, 100 ms
+MAX_RETRANSMISSION_COUNT = 3
 
 class GameNetSender(BaseGameNetAPI):
     def __init__(self, app_name: str):
