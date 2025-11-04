@@ -14,10 +14,9 @@ from game_net_api.utils import calc_latency, now_ms, pack_packet, unpack_packet
 from dataclasses import dataclass
 
 @dataclass
-class Packet:
+class DeliveredDataStruct:
     seq: int
     is_reliable: bool
-    retransmissions: int
     timestamp: int
     latency: int
     payload: bytes
@@ -30,8 +29,7 @@ class Packet:
 
         channel_str = "Reliable" if self.is_reliable else "Unreliable"
         return (
-            f"seq={self.seq}, channel={channel_str}, "
-            f"retransmissions={self.retransmissions}, timestamp={self.timestamp}, "
+            f"seq={self.seq}, channel={channel_str}, timestamp={self.timestamp}, "
             f"RTT(one-way)={self.latency}ms, payload={payload_str}"
         )
 
@@ -47,12 +45,12 @@ class GameNetReceiver(BaseGameNetAPI):
 
         # Generic receiver states
         self._src_addr = None
-        self._deliver_cb = None
+        self._deliver_callback = None
 
         # Additional states for reliable channel
         self._base_seq = 0  # smallest expected seq in window
         self._received = [False] * WINDOW_SIZE
-        self._buffer: List[Tuple | None] = [None] * WINDOW_SIZE
+        self._buffer: List[Tuple[int, int, bytes] | None] = [None] * WINDOW_SIZE # (seq, sent_timestamp, payload)
         self._skip_timers = {}  # seq -> skip timers
 
         # Metrics
@@ -74,9 +72,9 @@ class GameNetReceiver(BaseGameNetAPI):
             "jitter_ms": 0.0,
         }
 
-    async def listenOnce(self, bind_addr: Tuple[str, int], deliver_cb: Callable[[Packet], None]):
+    async def listenOnce(self, bind_addr: Tuple[str, int], deliver_callback: Callable[[DeliveredDataStruct], None]):
         await self._start(bind_addr)
-        self._deliver_cb = deliver_cb
+        self._deliver_callback = deliver_callback
 
     def stop(self):
         for timer in self._skip_timers.values():
@@ -93,32 +91,21 @@ class GameNetReceiver(BaseGameNetAPI):
             print(f"[WARNING] Data received from {addr} when src_addr is {self._src_addr}, the server only accepts listening to single source.")
             return
         
-        arrival_timestamp = now_ms()
         try:
-            channel, seq, retrans_count, sent_timestamp, payload = unpack_packet(data)
+            channel, seq, sent_timestamp, payload = unpack_packet(data)
         except Exception as e:
             print(f"[ServerProtocol] bad pkt from {addr}: {e}")
             return
 
         if channel == CHAN_UNRELIABLE:
-            self._handle_unreliable(seq, retrans_count, payload, sent_timestamp, arrival_timestamp)
+            self._deliver_to_application(channel,seq, sent_timestamp, payload) # Deliver directly
         elif channel == CHAN_RELIABLE:
-            self._handle_reliable(seq, retrans_count, payload, sent_timestamp, arrival_timestamp)
+            self._handle_reliable(seq, sent_timestamp, payload)
         elif channel == CHAN_ACK:
             print(f"[WARNING] ACK packet received from {addr} on Receiver")
             pass  # Ignore ACK packets for server
 
-    def _handle_unreliable(
-        self, seq: int, retrans_count: int, payload: bytes, sent_timestamp: int, arrival_timestamp: int
-    ):
-        latency = calc_latency(sent_timestamp, arrival_timestamp)
-        self._deliver_cb(Packet(seq, False, retrans_count, arrival_timestamp, latency, payload))
-
-        self._update_metrics(CHAN_UNRELIABLE, sent_timestamp, arrival_timestamp, payload)
-
-    def _handle_reliable(
-        self, seq: int, retrans_count: int, payload: bytes, sent_timestamp: int, arrival_timestamp: int
-    ):
+    def _handle_reliable(self, seq: int, sent_timestamp: int, payload: bytes):
         # If seq outside window [base_seq - WINDOW_SIZE, base_seq + WINDOW_SIZE), ignore
         if not self._in_window(seq, self._base_seq) and not self._in_window(
             seq, (self._base_seq - WINDOW_SIZE) % MAX_SEQ_NUM
@@ -133,23 +120,21 @@ class GameNetReceiver(BaseGameNetAPI):
         if not self._in_window(seq, self._base_seq) or self._received[seq % WINDOW_SIZE]:
             return
 
-        latency = calc_latency(sent_timestamp, arrival_timestamp)
-        self._buffer[seq % WINDOW_SIZE] = (seq, retrans_count, payload, arrival_timestamp, latency)
+        self._buffer[seq % WINDOW_SIZE] = (seq, sent_timestamp, payload)
         self._received[seq % WINDOW_SIZE] = True
 
         # If out of order, start skip timer
         if seq != self._base_seq:
             self._start_skip_timer(seq)
 
-        self._try_deliver()
-        self._update_metrics(CHAN_RELIABLE, sent_timestamp, arrival_timestamp, payload)
+        self._try_deliver_reliable()
 
-    def _try_deliver(self):
+    def _try_deliver_reliable(self):
         while self._received[self._base_seq % WINDOW_SIZE]:
             buf = self._buffer[self._base_seq % WINDOW_SIZE]
             if buf is not None:
-                seq, retrans_count, payload, arrival_timestamp, latency = buf
-                self._deliver_cb(Packet(seq, True, retrans_count, arrival_timestamp, latency, payload))
+                seq, sent_timestamp, payload = buf
+                self._deliver_to_application(CHAN_RELIABLE, seq, sent_timestamp, payload)
             else:
                 self.reliable_channel_metrics["skipped_packets"] += 1
 
@@ -183,27 +168,31 @@ class GameNetReceiver(BaseGameNetAPI):
                 self.transport.sendto(ack_pkt, self._src_addr)
                 self._received[check_seq % WINDOW_SIZE] = True  # Mark as received to skip
 
-            self._try_deliver()
+            self._try_deliver_reliable()
 
         self._skip_timers[seq] = asyncio.create_task(skip_packets())
 
-    def _update_metrics(self, channel: int, sent_timestamp: int, arrival_timestamp: int, payload: bytes):
+    def _deliver_to_application(self, channel: int, seq: int, sent_timestamp: int, payload: bytes):
+        latency = calc_latency(sent_timestamp, now_ms())
+        self._deliver_callback(DeliveredDataStruct(seq, channel == CHAN_RELIABLE, sent_timestamp, latency, payload))
+        self._update_metrics(channel, latency, payload)
+        
+
+    def _update_metrics(self, channel: int, latency: int, payload: bytes):
         metrics = self.reliable_channel_metrics if channel == CHAN_RELIABLE else self.unreliable_channel_metrics
 
-        transit_ms = calc_latency(sent_timestamp, arrival_timestamp)
-
         if "prev_transit_ms" not in metrics:
-            metrics["prev_transit_ms"] = transit_ms
+            metrics["prev_transit_ms"] = latency
 
         # RFC 3550 jitter calculation (https://datatracker.ietf.org/doc/html/rfc3550#appendix-A.8)
-        D = transit_ms - metrics["prev_transit_ms"]
-        metrics["prev_transit_ms"] = transit_ms
+        D = latency - metrics["prev_transit_ms"]
+        metrics["prev_transit_ms"] = latency
         metrics["jitter_ms"] += (abs(D) - metrics["jitter_ms"]) / 16.0
 
         # Update latency stats
-        metrics["latency_sum_ms"] += transit_ms
-        metrics["latency_min_ms"] = min(metrics["latency_min_ms"], transit_ms)
-        metrics["latency_max_ms"] = max(metrics["latency_max_ms"], transit_ms)
+        metrics["latency_sum_ms"] += latency
+        metrics["latency_min_ms"] = min(metrics["latency_min_ms"], latency)
+        metrics["latency_max_ms"] = max(metrics["latency_max_ms"], latency)
 
         # Packet and byte counters
         metrics["received_packets"] += 1

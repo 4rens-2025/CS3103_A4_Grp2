@@ -1,7 +1,7 @@
 import asyncio
 from typing import Tuple
 
-from game_net_api import GameNetReceiver, Packet
+from game_net_api import GameNetReceiver, DeliveredDataStruct
 
 class ReceiverApp:
     def __init__(self, bind_addr: Tuple[str, int]):
@@ -14,7 +14,7 @@ class ReceiverApp:
         await asyncio.sleep(duration)
         self._receiver.stop()
 
-    def _deliver_packet(self, packet: Packet):
+    def _deliver_packet(self, packet: DeliveredDataStruct):
         print(packet)
 
     def get_metrics(self):

@@ -10,6 +10,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
     Print summarized metrics for a specific channel.
     """
     sent_packets = sender_metric.get("sent_packets", 0)
+    retransmissions = sender_metric.get("retransmissions", 0)
     received_packets = receiver_metric.get("received_packets", 0)
     skipped_packets = receiver_metric.get("skipped_packets", 0)
     received_bytes = receiver_metric.get("received_bytes", 0)
@@ -26,6 +27,7 @@ def print_metrics(sender_metric, receiver_metric, duration_s: float = 1.0):
 
     print("--------------------------------------------------")
     print(f"Sent packets:       {sent_packets}")
+    print(f"Retransmissions:    {retransmissions}")
     print(f"Received packets:   {received_packets}")
     print(f"Skipped packets:    {skipped_packets}")
     print(f"Delivery ratio:     {delivery_ratio:.2f}%")
